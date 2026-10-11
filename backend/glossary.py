@@ -1,4 +1,4 @@
-"""术语表 / 人名对照表。
+﻿"""术语表 / 人名对照表。
 
 两种用途：
   * LLM 翻译时作为 prompt 里的强制对照（最有效）
@@ -25,6 +25,19 @@ from .util import get_logger
 log = get_logger("jplt.glossary")
 
 
+def _yaml_scalar(v: str) -> str:
+    """把字符串安全地写成 YAML 标量。
+
+    日语里出现 `:` `#` `[` 之类字符时裸写会坏掉文件，统一加引号最稳。
+    """
+    s = str(v)
+    if s == "" :
+        return '""'
+    if re.search(r"[:#\[\]{}&*!|>'\"%@`,\n]", s) or s != s.strip():
+        return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    return s
+
+
 @dataclass
 class Entry:
     ja: str
@@ -36,8 +49,10 @@ class Entry:
 
 
 class Glossary:
-    def __init__(self, entries: list[Entry] | None = None):
+    def __init__(self, entries: list[Entry] | None = None, path: str | Path | None = None):
         self.entries: list[Entry] = entries or []
+        # 记住来源路径，这样「提升为术语」时知道该写回哪里
+        self.path: Path | None = Path(path) if path else None
 
     # ---------- 加载 ----------
     @classmethod
@@ -47,7 +62,8 @@ class Glossary:
         p = Path(path)
         if not p.exists():
             log.debug("术语表不存在：%s", p)
-            return cls([])
+            # 即使文件不存在也记住路径，方便后续写入时创建
+            return cls([], path=p)
         text = p.read_text(encoding="utf-8")
         entries: list[Entry] = []
         data = None
@@ -96,10 +112,83 @@ class Glossary:
                     entries.append(Entry(ja=m.group(1).strip(), zh=m.group(2).strip()))
 
         log.info("载入术语表 %d 条 (%s)", len(entries), p.name)
-        return cls(entries)
+        return cls(entries, path=p)
 
     def __len__(self) -> int:
         return len(self.entries)
+
+    # ---------- 写入 ----------
+    def has(self, ja: str) -> bool:
+        a = (ja or "").strip()
+        return any(e.ja.strip() == a for e in self.entries) if a else False
+
+    def write_entries(self, path: str | Path | None = None) -> int:
+        """把内存里的条目写回 glossary.yaml（按 ja 排序，保留文件头说明）。
+
+        只用于「把修正提升为术语」这类操作。写之前会备份成 .bak，
+        因为用户可能在文件里手写了注释 —— 重写会丢掉条目内的注释，
+        但顺序和内容会保留。
+        """
+        p = Path(path) if path else self.path
+        if p is None:
+            raise ValueError("没有指定 glossary 路径")
+        p = Path(p)
+        if p.exists():
+            try:
+                p.with_suffix(p.suffix + ".bak").write_bytes(p.read_bytes())
+            except Exception as exc:
+                log.debug("备份术语表失败：%s", exc)
+
+        lines = [
+            "# ============================================================",
+            "#  术语表 —— 人名 / 专有名词强制对照",
+            "#  这里的词翻译时会被**强制**使用你指定的中文写法。",
+            "#  界面里改字幕时勾「专有名词」会自动追加到这里。",
+            "#  也可以手工编辑：注意 ja/zh 都要写全。",
+            "# ============================================================",
+            "",
+            "entries:",
+        ]
+        for e in sorted(self.entries, key=lambda x: x.ja):
+            lines.append(f"  - ja: {_yaml_scalar(e.ja)}")
+            lines.append(f"    zh: {_yaml_scalar(e.zh)}")
+            if e.note:
+                lines.append(f"    note: {_yaml_scalar(e.note)}")
+            if e.alts:
+                alts = ", ".join(_yaml_scalar(a) for a in e.alts)
+                lines.append(f"    alt: [{alts}]")
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            log.info("术语表已更新：%d 条 -> %s", len(self.entries), p)
+            return len(self.entries)
+        except Exception as exc:
+            log.warning("写术语表失败：%s", exc)
+            raise
+
+    def add(self, ja: str, zh: str, note: str = "", alts: list[str] | None = None,
+            path: str | Path | None = None) -> bool:
+        """加一条术语并落盘。已存在同名词条时更新译法。
+
+        返回 True 表示有变化（新加或改动），False 表示已存在且完全相同。
+        """
+        ja, zh = (ja or "").strip(), (zh or "").strip()
+        if not ja or not zh:
+            return False
+        for e in self.entries:
+            if e.ja.strip() == ja:
+                if e.zh == zh and not (alts or []):
+                    return False
+                e.zh = zh
+                if note:
+                    e.note = note
+                if alts:
+                    e.alts = sorted(set(e.alts) | set(alts))
+                self.write_entries(path)
+                return True
+        self.entries.append(Entry(ja=ja, zh=zh, note=note, alts=list(alts or [])))
+        self.write_entries(path)
+        return True
 
     # ---------- prompt ----------
     def prompt_block(self, limit: int = 80) -> str:

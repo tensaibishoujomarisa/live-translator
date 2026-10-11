@@ -290,6 +290,33 @@ async function run() {
   check('设置里显示已记住条数', /7 条/.test(learnNote || ''), String(learnNote));
   check('提示术语表建议', /2 条建议/.test(learnNote || ''), String(learnNote));
 
+  // 写进术语表按钮
+  const btnPromote = await js(`(() => {
+    const b = document.querySelector('#btn-promote');
+    return { exists: !!b, text: b ? b.textContent.trim() : '' };
+  })()`);
+  check('有「写进术语表」按钮', btnPromote.exists === true);
+  await js(`document.querySelector('#btn-promote').dispatchEvent(
+    new MouseEvent('click', { bubbles: true }))`);
+  await sleep(250);
+  const promo = await js(`window.__uiTest.promotions()`);
+  check('点了会通知后端提升术语', Array.isArray(promo) && promo.length >= 1,
+    JSON.stringify(promo));
+
+  // 写入结果事件
+  await emit({ kind: 'terms_promoted', added: 2, updated: 1, skipped: 0, total: 40 });
+  await sleep(200);
+  const promoNote = await js(`document.querySelector('#learn-note').textContent`);
+  check('显示写入结果', /新增 2 条.*更新 1 条.*共 40 条/.test(promoNote || ''),
+    String(promoNote));
+
+  // 没有可写的条目
+  await emit({ kind: 'terms_promoted', added: 0, updated: 0, skipped: 3, total: 40 });
+  await sleep(200);
+  const promoNote2 = await js(`document.querySelector('#learn-note').textContent`);
+  check('没有可写条目时如实提示', /没有需要写入/.test(promoNote2 || ''),
+    String(promoNote2));
+
   // ---------- 多行滚动 + 历史回看 ----------
   console.log('\n[多行滚动与历史回看]');
   // 连发 12 句：DOM 里应保留全部（historyLines=300），但窗口只能显示约 3 行

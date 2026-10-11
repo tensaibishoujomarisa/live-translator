@@ -520,6 +520,15 @@ ipcMain.handle('learn-stats', () => {
   return { ok: true };
 });
 
+// 把「够格」的修正候选写进术语表。
+// 用 JSON 传参：日语里出现空格/tab 时，命令行分词会切错（早期版本试图把空格
+// 换成下划线，那会直接改坏术语本身）。
+ipcMain.handle('promote-terms', (_e, terms) => {
+  const list = Array.isArray(terms) ? terms.map((x) => String(x)).filter(Boolean) : [];
+  const sent = sendCommand('terms-json ' + JSON.stringify({ terms: list }));
+  return { ok: sent, error: sent ? '' : '后端未运行' };
+});
+
 ipcMain.handle('send-command', (_e, cmd) => {
   const name = String(cmd || '').trim();
   // UI 自身的命令（后端不认识）

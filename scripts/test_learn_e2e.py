@@ -37,18 +37,26 @@ def check(name: str, cond: bool, detail: str = "") -> None:
 def main() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="jplt_e2e_"))
     corr = tmp / "corrections.jsonl"
+    gloss = tmp / "glossary.yaml"
+    # 术语表也给个临时文件：测试发的是 scope=term，会触发「自动写进术语表」，
+    # 不隔离的话会改到用户真实的 glossary.yaml（真踩过这个坑）
+    gloss.write_text("entries:\n  - ja: 既存\n    zh: 已有条目\n", encoding="utf-8")
+    real_gloss = ROOT / "glossary.yaml"
+    real_gloss_before = real_gloss.read_bytes() if real_gloss.exists() else None
     real_corr = ROOT / "data" / "corrections.jsonl"
     real_existed = real_corr.exists()
 
     print("=" * 70)
     print(" 修正链路端到端验证（Electron 走的就是这条命令）")
     print("=" * 70)
-    print(f"测试修正库：{corr}\n")
+    print(f"测试修正库：{corr}")
+    print(f"测试术语表：{gloss}\n")
 
     proc = subprocess.Popen(
         [sys.executable, "-u", "-m", "backend.main", "--stdin-commands",
          "--provider", "local", "--serve", "--port", "0",
-         "--learning-path", str(corr), "--model", "tiny"],
+         "--learning-path", str(corr), "--glossary-path", str(gloss),
+         "--model", "tiny"],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
         text=True, encoding="utf-8", bufsize=1, cwd=str(ROOT),
     )
@@ -81,7 +89,9 @@ def main() -> int:
         check("收到 corrected 回执", '"kind":"corrected"' in joined,
               joined[-200:])
         check("回执里带了统计", '"stats"' in joined)
-        check("给了界面提示", "已记住修正" in joined, joined[-200:])
+        # scope=term 会被自动提升进术语表，提示文案随之变化，
+        # 所以这里匹配共同前缀而不是整句
+        check("给了界面提示", "已记住" in joined, joined[-200:])
 
         # 2) 文件真的写到了指定路径
         check("修正写进指定文件", corr.exists())
@@ -157,6 +167,15 @@ def main() -> int:
                 pass
         else:
             check("没有污染真实修正库", True)
+
+        # 术语表最容易出事：scope=term 会自动写入。
+        # 之前没隔离路径，测试真的往用户的 glossary.yaml 里写过条目。
+        if real_gloss_before is not None:
+            now = real_gloss.read_bytes() if real_gloss.exists() else b""
+            check("没有污染真实术语表", now == real_gloss_before,
+                  "glossary.yaml 被改动了")
+        else:
+            check("没有污染真实术语表", not real_gloss.exists())
 
     import shutil
 

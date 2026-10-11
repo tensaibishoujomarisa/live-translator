@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld('jplt', {
   // 「越用越准」：记一条人工修正
   correct: (payload) => ipcRenderer.invoke('correct', payload),
   learnStats: () => ipcRenderer.invoke('learn-stats'),
+  promoteTerms: (terms) => ipcRenderer.invoke('promote-terms', terms),
   backendStatus: () => ipcRenderer.invoke('backend-status'),
   restartBackend: () => ipcRenderer.invoke('restart-backend'),
   listDevices: () => ipcRenderer.invoke('list-devices'),

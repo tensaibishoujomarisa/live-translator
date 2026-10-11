@@ -9,6 +9,8 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
 import threading
 import time
 from abc import ABC, abstractmethod
@@ -37,6 +39,8 @@ class Translator(ABC):
         self.stats = {"calls": 0, "chars": 0, "total_s": 0.0, "errors": 0}
         self._fail_streak = 0
         self._disabled_reason = ""
+        # 术语表 prompt 缓存（运行期不变）
+        self._glossary_block: str | None = None
 
     @abstractmethod
     def _run(self, source: str, context: str, glossary_block: str) -> str:
@@ -65,9 +69,13 @@ class Translator(ABC):
             raise TranslationDisabled(self._disabled_reason)
 
         t0 = time.time()
-        gb = self.glossary.prompt_block() if self.glossary else ""
+        # 术语表在运行期不变，预先算好；每次翻译重算等于白烧 token
+        # （37 条术语约 600 字符，每句都带一遍，一小时直播就是几十万 token）
+        if self._glossary_block is None:
+            self._glossary_block = self.glossary.prompt_block() if self.glossary else ""
+        gb = self._glossary_block
         # 「越用越准」：把用户以前的修正作为少样本示例带进去。
-        # LLM 走 prompt 约束；本地 NMT 用不上 prompt，走下面的后处理替换。
+        # 这部分必须按句挑（相关度），不能全量塞。
         if self.learning is not None:
             try:
                 learned = self.learning.prompt_block(source)
@@ -148,6 +156,9 @@ class NullTranslator(Translator):
     注意：这里必须**自己实现 translate**，不能走基类。
     基类里有「熔断中直接抛 TranslationDisabled」的守卫，
     而 provider=off 属于「本来就不翻」，不是故障 —— 调用方只想要一个空结果。
+
+    也要接住 learning：没配 API Key 时工厂会返回这个实例，
+    如果它不持有修正库，「只显示日文」模式下点 ✏ 记修正就会全部失败。
     """
 
     name = "off"
@@ -621,7 +632,7 @@ def create_translator(cfg, logger_status: Callable[[str], None] | None = None) -
 
     if provider in ("off", "none", "disable", "disabled"):
         status("翻译已关闭，只显示日文")
-        return NullTranslator(glossary)
+        return NullTranslator(glossary, learning)
 
     if provider == "local":
         backend = str(cfg.get("translate", "local", "backend", default="transformers")).lower()
@@ -655,7 +666,9 @@ def create_translator(cfg, logger_status: Callable[[str], None] | None = None) -
     api_key = resolve_api_key(cfg)
     if not api_key:
         status("未配置 API Key，暂时只显示日文（在设置里填 Key 或改用本地翻译）")
-        return NullTranslator(glossary)
+        # 仍然把 glossary / learning 交给它 —— 这样「只显示日文」时
+        # 用户改的字幕依然能被记住、也能写进术语表
+        return NullTranslator(glossary, learning)
     return LLMTranslator(
         base_url=str(cfg.get("translate", "llm", "base_url", default="")),
         api_key=api_key,

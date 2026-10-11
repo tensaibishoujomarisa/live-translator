@@ -32,6 +32,7 @@ const settings = {
 const commands = [];
 
 const corrections = [];
+const promotions = [];
 
 contextBridge.exposeInMainWorld('jplt', {
   onEvent: (cb) => {
@@ -60,7 +61,11 @@ contextBridge.exposeInMainWorld('jplt', {
   openExternal: () => {},
   // 「越用越准」
   correct: async (payload) => { corrections.push(payload); return { ok: true }; },
-  learnStats: async () => ({ ok: true })
+  learnStats: async () => ({ ok: true }),
+  promoteTerms: async (terms) => {
+    promotions.push(terms);
+    return { ok: true };
+  }
 });
 
 // 主进程用这个把合成事件喂进来
@@ -68,5 +73,6 @@ contextBridge.exposeInMainWorld('__uiTest', {
   emit: (msg) => { listeners.forEach((cb) => { try { cb(msg); } catch (_) {} }); },
   listenerCount: () => listeners.length,
   commands: () => commands.slice(),
-  corrections: () => corrections.slice()
+  corrections: () => corrections.slice(),
+  promotions: () => promotions.slice()
 });

@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import os
 import queue
 import threading
 import time
@@ -513,10 +514,29 @@ class Pipeline:
         if c is None:
             return {"ok": False, "error": "原文和修正不能为空，也不能完全相同"}
 
+        promoted: dict = {}
+        # 用户勾了「这是专有名词」→ 直接写进术语表。
+        # 术语表是强制对照（每次翻译都全量带上），比整句示例可靠得多，
+        # 所以不该让用户等它"出现第二次"才生效。
+        if scope == "term" and len(c.ja.strip()) <= 24:
+            try:
+                promoted = self.promote_terms(only=[c.ja])
+            except Exception as exc:
+                log.warning("自动提升术语失败：%s", exc)
+
         self.counters["corrections"] = self.counters.get("corrections", 0) + 1
         stats = store_obj.stats()
         self.bridge.emit("corrected", ja=c.ja, right=c.right, wrong=c.wrong,
-                         scope=c.scope, stats=stats)
+                         scope=c.scope, stats=stats,
+                         promoted=(promoted.get("added", 0) + promoted.get("updated", 0)))
+        if promoted.get("added") or promoted.get("updated"):
+            self.bridge.status(
+                "learn",
+                f"已记住，并写进术语表：{c.ja} → {c.right}"
+                f"（术语表共 {promoted.get('total', '?')} 条，以后每次都强制用这个译法）",
+            )
+            return {"ok": True, "stats": stats, "promoted": promoted}
+
         # 顺带提示一下可以提升为术语表的候选
         terms = store_obj.suggest_terms()
         if terms and len(terms) <= 3:
@@ -526,6 +546,93 @@ class Pipeline:
         else:
             self.bridge.status("learn", f"已记住修正（共 {stats['total']} 条）")
         return {"ok": True, "stats": stats}
+    def promote_terms(self, only: list[str] | None = None) -> dict:
+        """把修正记录提升为术语表条目（写入 glossary.yaml）。
+
+        only 给定时只处理这些日语词，否则处理所有「够格」的候选
+        （在 ≥2 条修正里出现过的短短语）。
+        """
+        if self.translator is None or getattr(self.translator, "learning", None) is None:
+            return {"ok": False, "error": "修正库未启用"}
+        store = self.translator.learning
+        glossary = getattr(self.translator, "glossary", None)
+        if glossary is None:
+            return {"ok": False, "error": "术语表未启用"}
+
+        # 路径以配置为准。
+        # 不要只信 glossary.path —— 翻译器可能是在「术语表文件还不存在」时
+        # 构造的，或者被 set_translator_provider 换过实例，
+        # 那样 path 可能是 None，功能就静默失效了。
+        gl_path = self.cfg.get_path("glossary", "path")
+        if not gl_path:
+            return {"ok": False, "error": "配置里没有 glossary.path"}
+
+        if only:
+            # 用户明确指定的（勾了「这是专有名词」），不看出现次数直接收。
+            # 但整句翻译不该进术语表 —— 术语表只放词/短语，太长的跳过。
+            cands = []
+            store_items = store.all()
+            for ja in only:
+                ja = (ja or "").strip()
+                if not ja:
+                    continue
+                if len(ja) > 24:
+                    log.info("跳过过长的术语（%d 字）：%s", len(ja), ja[:20])
+                    continue
+                hit = next((c for c in store_items if c.ja.strip() == ja), None)
+                if hit:
+                    cands.append(hit)
+        else:
+            cands = store.suggest_terms()
+
+        added: list[str] = []
+        updated: list[str] = []
+        skipped: list[str] = []
+        for c in cands:
+            ja = c.ja.strip()
+            existed = glossary.has(ja)
+            try:
+                # 显式把路径传下去：不依赖实例上的 path
+                changed = glossary.add(c.ja, c.right, note=c.note, path=gl_path)
+            except Exception as exc:
+                log.warning("写术语表失败（%s）：%s", ja, exc)
+                skipped.append(ja)
+                continue
+            if not changed:
+                skipped.append(ja)      # 已存在且译法完全相同
+            elif existed:
+                updated.append(ja)      # 原有条目被改了译法
+            else:
+                added.append(ja)        # 新加
+
+        # 记下路径，后续写入不用再猜
+        try:
+            glossary.path = Path(gl_path)
+        except Exception:
+            pass
+
+        # 术语表变了，翻译器的 prompt 缓存必须失效，否则新词不生效
+        if added or updated:
+            try:
+                self.translator._glossary_block = None
+            except Exception:
+                pass
+
+        stats = {"added": len(added), "updated": len(updated),
+                 "skipped": len(skipped), "added_terms": added,
+                 "updated_terms": updated, "skipped_terms": skipped,
+                 "path": str(gl_path), "total": len(glossary.entries)}
+        self.bridge.emit("terms_promoted", **stats)
+        if added or updated:
+            self.bridge.status(
+                "learn",
+                f"已写入术语表 {len(added) + len(updated)} 条"
+                + (f"（跳过 {len(skipped)} 条：已存在或无变化）" if skipped else "")
+                + f"，术语表现在共 {len(glossary.entries)} 条",
+            )
+        else:
+            self.bridge.status("learn", f"没有需要写入的条目（术语表共 {len(glossary.entries)} 条）")
+        return {"ok": True, **stats}
 
     def learn_stats(self) -> dict:
         if self.translator is None or getattr(self.translator, "learning", None) is None:

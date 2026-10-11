@@ -388,6 +388,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--context-sentences", type=int, default=None, help="覆盖 translate.context_sentences")
     ap.add_argument("--learning-path", default=None,
                     help="覆盖 learning.path（修正记录存放位置；发行版必须传，否则会写到别处）")
+    ap.add_argument("--glossary-path", default=None,
+                    help="覆盖 glossary.path（测试必须传，否则会改到用户真实的术语表）")
     ap.add_argument("--api-key", default=None, help="翻译 API Key（也可用环境变量）")
     ap.add_argument("--base-url", default=None, help="翻译 API base_url")
     ap.add_argument("--llm-model", default=None, help="翻译模型名")
@@ -418,6 +420,8 @@ def apply_cli_overrides(cfg: Config, args: argparse.Namespace) -> Config:
         ov.setdefault("translate", {})["context_sentences"] = args.context_sentences
     if args.learning_path:
         ov.setdefault("learning", {})["path"] = args.learning_path
+    if args.glossary_path:
+        ov.setdefault("glossary", {})["path"] = args.glossary_path
     if args.api_key:
         ov.setdefault("translate", {}).setdefault("llm", {})["api_key"] = args.api_key
     if args.base_url:
@@ -467,6 +471,21 @@ def _handle_command(cmd: str, pipeline, server) -> None:
                 pipeline.update_tuning({"translate": {"context_sentences": int(rest[0])}})
             except ValueError:
                 log.warning("context 参数不是整数：%s", rest[0])
+    elif name in ("terms", "promote-terms", "terms-json"):
+        # 把修正记录提升为术语表条目（写入 glossary.yaml）。
+        # GUI 走 terms-json（JSON 传参，日语里的空格/tab 不会切错）。
+        try:
+            if name == "terms-json":
+                raw = cmd.split(" ", 1)[1] if " " in cmd else "{}"
+                payload = json.loads(raw)
+                only = [str(x) for x in (payload.get("terms") or []) if str(x).strip()] or None
+            else:
+                only = [x for x in rest if x.strip()] or None
+            res = pipeline.promote_terms(only=only)
+            if not res.get("ok"):
+                log.warning("提升术语失败：%s", res.get("error"))
+        except Exception as exc:
+            log.warning("提升术语失败：%s", exc)
     elif name == "learn":
         # 查看「越用越准」攒了多少修正。
         # 注意：**不能 print 到 stdout** —— stdout 是 JSONL 事件协议的通道，
@@ -674,6 +693,12 @@ def _http_command(name: str, payload: dict, pipeline) -> dict:
         )
         if not res.get("ok"):
             raise ValueError(res.get("error") or "记录失败")
+        return res
+    if name in ("terms", "promote-terms"):
+        only = [str(x) for x in (payload.get("terms") or []) if str(x).strip()]
+        res = pipeline.promote_terms(only=only or None)
+        if not res.get("ok"):
+            raise ValueError(res.get("error") or "提升失败")
         return res
     if name == "learn":
         return {"learn": pipeline.learn_stats()}

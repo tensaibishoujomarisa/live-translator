@@ -464,6 +464,17 @@ function onEvent(msg) {
       break;
     }
 
+    case 'terms_promoted': {
+      const a = Number(msg.added || 0);
+      const u = Number(msg.updated || 0);
+      const sk = Number(msg.skipped || 0);
+      el('learn-note').textContent =
+        (a || u)
+          ? `已写入术语表：新增 ${a} 条、更新 ${u} 条，共 ${msg.total} 条`
+          : `没有需要写入的（跳过 ${sk} 条）`;
+      break;
+    }
+
     case 'corrected':
       // 保存成功后的回执（弹层里已经给了即时反馈，这里不重复弹）
       break;
@@ -676,6 +687,15 @@ function bindUI() {
     const s = await api.learnStats();
     if (!s || !s.ok) el('learn-note').textContent = '后端未运行';
     // 真正的数字由 learn_stats 事件回来后再填
+  };
+
+  // 把候选写进术语表（只处理程序自己判定「反复出现」的那些）
+  el('btn-promote').onclick = async () => {
+    if (!api.promoteTerms) return;
+    el('learn-note').textContent = '写入中…';
+    const r = await api.promoteTerms([]);
+    if (!r || !r.ok) el('learn-note').textContent = '后端未运行';
+    // 结果由 terms_promoted / status 事件回来后再填
   };
 
   ['set-gain', 'set-minSilence', 'set-vadThreshold', 'set-contextSentences', 'set-fontSize',
