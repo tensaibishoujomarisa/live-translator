@@ -34,6 +34,9 @@ log = get_logger("jplt.pipeline")
 
 
 class Pipeline:
+    # 重复定稿的判定窗口（秒）：这段时间内「文本 + 音频时长」都一样就判为重复
+    DUP_WINDOW_S = 2.5
+
     def __init__(self, cfg: Config, bridge: Bridge | None = None):
         self.cfg = cfg
         self.bridge = bridge or Bridge(mode="text")
@@ -71,6 +74,8 @@ class Pipeline:
         self._base_gain = float(cfg.get("audio", "gain", default=1.0))
         # 同一段识别结果的多句译文累积区：{seg_id: [译文1, 译文2, ...]}
         self._seg_mt: dict[int, list[str]] = {}
+        # 最近一条定稿的指纹 (文本, 时长档位) 与时间，用于丢弃重复
+        self._last_final: tuple[tuple[str, int], float] | None = None
 
     # ---------------------------------------------------------------- 启动
     def build(self) -> None:
@@ -261,6 +266,21 @@ class Pipeline:
                 )
                 continue
 
+            # 重复定稿防护：同一段音频如果因为采集/分段的边界情况被送进来两次，
+            # 屏幕上就会同一句话连着出两条（日文中文各自重复一遍，很显眼）。
+            # 判据用「文本相同 + 音频时长几乎一致 + 时间相邻」：
+            # 主播真的把同一句话说了两遍时，两次的音频时长不可能精确到毫秒级相同。
+            key = (res.text, int(round(res.audio_s * 1000 / 50.0)))
+            now = time.time()
+            if self._last_final and self._last_final[0] == key and \
+                    now - self._last_final[1] < self.DUP_WINDOW_S:
+                self.counters["dup_dropped"] = self.counters.get("dup_dropped", 0) + 1
+                log.info("丢弃重复定稿（%dms 内内容与时长都相同）：%s",
+                         int((now - self._last_final[1]) * 1000), res.text[:40])
+                self.bridge.emit("asr_dup", id=seg_id, text=res.text)
+                continue
+            self._last_final = (key, now)
+
             self.counters["finals"] += 1
             self._last_progress = time.time()
             self.asr.remember(res.text)
@@ -429,7 +449,7 @@ class Pipeline:
             part=len(parts),
             latency_ms=int((time.time() - t0) * 1000),
         )
-        log.info("中 %s%s", "".join(parts) if len(parts) > 1 else out,
+        log.info("中 %s%s", full if len(parts) > 1 else out,
                  f"  (第{len(parts)}句)" if len(parts) > 1 else "")
 
     # ---------------------------------------------------------------- 电平心跳

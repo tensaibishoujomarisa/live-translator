@@ -123,8 +123,17 @@ html, body {
 .ibtn.active { background: var(--accent); color: #06101f; }
 
 /* ---------------------------------------------------------------- 字幕区 */
+/* 注意 1：这里**不能**设 -webkit-app-region: drag。
+   拖拽区会吃掉滚轮事件，导致没法滚动回看历史。
+   拖窗口请抓顶部的控制栏（那条 bar 是 drag 区）。
+
+   注意 2：底对齐**不能用** justify-content: flex-end。
+   在 overflow-y: auto 的滚动容器里，flex-end 会让超出顶部的内容
+   跑到滚动区域上方且滚不到（scrollHeight 甚至等于 clientHeight，容器
+   不认为自己是可滚动的）。正确做法是给第一条加 margin-top: auto，
+   把内容往下推。这个坑实测踩过。 */
 .subs {
-  -webkit-app-region: drag;
+  -webkit-app-region: no-drag;
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
@@ -132,11 +141,55 @@ html, body {
   padding: 8px 14px 12px;
   display: flex;
   flex-direction: column;
-  justify-content: flex-end;
   gap: 6px;
-  scrollbar-width: none;
+  /* 细滚动条，鼠标移上来才明显 */
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.25) transparent;
+  overscroll-behavior: contain;
 }
-.subs::-webkit-scrollbar { width: 0; }
+/* 内容不足一屏时把第一条压到底部（等价于原来的 flex-end，但可滚动） */
+.subs > .line:first-child,
+.subs > .hint:first-child { margin-top: auto; }
+.subs::-webkit-scrollbar { width: 7px; }
+.subs::-webkit-scrollbar-track { background: transparent; }
+.subs::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.16);
+  border-radius: 4px;
+}
+.subs:hover::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.34); }
+
+/* 回看历史时浮出来的「回到最新」按钮 */
+.jump {
+  -webkit-app-region: no-drag;
+  position: absolute;
+  right: 16px;
+  bottom: 12px;
+  z-index: 5;
+  border: 1px solid rgba(110, 168, 254, 0.5);
+  background: rgba(20, 26, 40, 0.92);
+  color: var(--accent);
+  font-size: 12px;
+  font-family: inherit;
+  padding: 4px 12px;
+  border-radius: 14px;
+  cursor: pointer;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
+}
+.jump:hover { background: var(--accent); color: #06101f; }
+
+.scroll-hint {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  top: 36px;
+  z-index: 5;
+  font-size: 11px;
+  color: var(--fg-dim);
+  background: rgba(var(--bg), 0.9);
+  border-radius: 10px;
+  padding: 2px 10px;
+  pointer-events: none;
+}
 
 .line {
   background: rgba(var(--bg), var(--op));

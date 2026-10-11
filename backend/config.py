@@ -136,7 +136,10 @@ DEFAULTS: dict[str, Any] = {
         "opacity": 0.82,
         "background": "#0b0b10",
         "show_source": True,
+        # 停留在屏幕上可见的行数
         "max_lines": 3,
+        # 往下滚动能回看多少条历史（DOM 里保留的行数上限）
+        "history_lines": 300,
         # 每条字幕停留时长（0 = 直到下一条）
         "hold_ms": 0,
         # 直播结束后仍无新内容的清屏时间

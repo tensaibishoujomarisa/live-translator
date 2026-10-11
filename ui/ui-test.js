@@ -20,10 +20,16 @@ function check(name, cond, detail) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// 必须注入 style.css：滚动、可见行数、鼠标穿透这些行为都依赖真实 CSS 求值，
+// 光有 DOM 是测不出来的（没有样式表时 getComputedStyle 全是不准的默认值）。
+const CSS = require('fs').readFileSync(
+  path.join(__dirname, 'renderer', 'style.css'), 'utf8');
+
 async function run() {
+  // 窗口开高一点，才能测「往上滚看历史」
   const win = new BrowserWindow({
     width: 1000,
-    height: 320,
+    height: 420,
     show: false,
     webPreferences: {
       preload: path.join(__dirname, 'ui-test-preload.js'),
@@ -38,6 +44,7 @@ async function run() {
   });
 
   await win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  await win.webContents.insertCSS(CSS);
   await sleep(400);
 
   const js = (code) => win.webContents.executeJavaScript(code, true);
@@ -162,19 +169,88 @@ async function run() {
   })()`);
   check('后端不累积时前端自己拼接', appended === '测试第一句。测试第二句', String(appended));
 
-  // ---------- 多行滚动 ----------
-  console.log('\n[多行滚动]');
-  for (let i = 10; i < 16; i++) {
+  // ---------- 多行滚动 + 历史回看 ----------
+  console.log('\n[多行滚动与历史回看]');
+  // 连发 12 句：DOM 里应保留全部（historyLines=300），但窗口只能显示约 3 行
+  for (let i = 10; i < 22; i++) {
     await emit({ kind: 'final', id: i, text: 'テスト' + i + '句目', compute_ms: 100 });
     await emit({ kind: 'translation', id: i, text: '测试第' + i + '句', latency_ms: 120 });
   }
-  await sleep(250);
+  await sleep(300);
+
   const scroll = await js(`(() => {
+    const s = document.querySelector('#subs');
     const r = document.querySelectorAll('#subs .line');
-    return { rows: r.length, last: r.length ? r[r.length-1].querySelector('.zh').textContent : null };
+    return {
+      rows: r.length,
+      last: r.length ? r[r.length-1].querySelector('.zh').textContent : null,
+      scrollHeight: s.scrollHeight,
+      clientHeight: s.clientHeight,
+      scrollTop: s.scrollTop,
+      atBottom: s.scrollHeight - s.scrollTop - s.clientHeight <= 40,
+      canScroll: s.scrollHeight > s.clientHeight,
+      overflowY: getComputedStyle(s).overflowY,
+      hintHidden: document.querySelector('#scroll-hint').classList.contains('hidden')
+    };
   })()`);
-  check('最多保留 maxLines(3) 行', scroll.rows === 3, String(scroll.rows));
-  check('最后一行是最新译文', scroll.last === '测试第15句', String(scroll.last));
+  check('DOM 里保留全部历史（不再只留可见几行）', scroll.rows >= 12, String(scroll.rows));
+  check('最后一行是最新译文', scroll.last === '测试第21句', String(scroll.last));
+  check('字幕区可滚动', scroll.canScroll === true, `h=${scroll.scrollHeight} c=${scroll.clientHeight}`);
+  check('overflow-y 是 auto（可滚）', scroll.overflowY === 'auto', scroll.overflowY);
+  check('默认跟随最新（滚到底部）', scroll.atBottom === true, `top=${scroll.scrollTop}`);
+  check('跟随时不显示历史提示', scroll.hintHidden === true);
+
+  // 往上滚 -> 应该停止跟随，并浮出「↓ 最新」与历史提示
+  // 注意滚到「中间」而不是最顶端：滚到 0 时确实已无更早内容，
+  // 提示会是「已到最早」（那是正确行为，测不到条数提示）
+  const scrolled = await js(`(async () => {
+    const s = document.querySelector('#subs');
+    s.scrollTop = Math.max(0, Math.round(s.scrollHeight * 0.35));
+    s.dispatchEvent(new Event('scroll'));
+    await new Promise(r => setTimeout(r, 120));
+    return {
+      scrollTop: s.scrollTop,
+      jumpHidden: document.querySelector('#btn-bottom').classList.contains('hidden'),
+      hintHidden: document.querySelector('#scroll-hint').classList.contains('hidden'),
+      hintText: document.querySelector('#scroll-hint').textContent
+    };
+  })()`);
+  check('往上滚后「↓ 最新」按钮出现', scrolled.jumpHidden === false);
+  check('往上滚后显示更早条数提示',
+    scrolled.hintHidden === false && /还有\s*\d+\s*条更早/.test(scrolled.hintText || ''),
+    String(scrolled.hintText));
+
+  // 关键：滚动期间来了新字幕，**不能**把用户拽回底部
+  await emit({ kind: 'final', id: 99, text: '新しい字幕', compute_ms: 100 });
+  await emit({ kind: 'translation', id: 99, text: '新来的字幕', latency_ms: 100 });
+  await sleep(250);
+  const held = await js(`(() => {
+    const s = document.querySelector('#subs');
+    return { scrollTop: s.scrollTop, atBottom: s.scrollHeight - s.scrollTop - s.clientHeight <= 40 };
+  })()`);
+  check('回看时新字幕不把视图拽回底部', held.atBottom === false, `top=${held.scrollTop}`);
+
+  // 点「↓ 最新」回到实时，并恢复跟随
+  const jumped = await js(`(async () => {
+    document.querySelector('#btn-bottom').click();
+    await new Promise(r => setTimeout(r, 200));
+    const s = document.querySelector('#subs');
+    return {
+      atBottom: s.scrollHeight - s.scrollTop - s.clientHeight <= 40,
+      jumpHidden: document.querySelector('#btn-bottom').classList.contains('hidden')
+    };
+  })()`);
+  check('点「↓ 最新」回到实时', jumped.atBottom === true);
+  check('回到实时后按钮收起', jumped.jumpHidden === true);
+
+  // 恢复跟随后，新字幕应再次自动滚到底
+  await emit({ kind: 'final', id: 100, text: 'また新しい', compute_ms: 100 });
+  await sleep(250);
+  const resumed = await js(`(() => {
+    const s = document.querySelector('#subs');
+    return s.scrollHeight - s.scrollTop - s.clientHeight <= 40;
+  })()`);
+  check('恢复跟随后新字幕自动滚到底', resumed === true);
 
   // ---------- 电平条 ----------
   console.log('\n[电平条]');

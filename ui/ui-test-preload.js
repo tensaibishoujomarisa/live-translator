@@ -14,6 +14,7 @@ const settings = {
   background: '#0b0b10',
   alwaysOnTop: true,
   maxLines: 3,
+  historyLines: 300,
   clearAfterMs: 0,
   provider: 'llm',
   asrModel: 'large-v3-turbo',

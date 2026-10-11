@@ -89,7 +89,10 @@ subtitle:
   opacity: 0.82
   background: "#0b0b10"
   show_source: true      # 是否显示日文原文（双语）
+  # 停留在屏幕上可见的行数
   max_lines: 3
+  # 往上滚动能回看多少条历史（把窗口拉大就能一次看更多）
+  history_lines: 300
   # 多久没有新字幕就自动清屏（毫秒），0 = 不清
   clear_after_ms: 25000
 

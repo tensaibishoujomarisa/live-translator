@@ -28,7 +28,7 @@
       </div>
     </header>
 
-    <!-- 字幕区 -->
+    <!-- 字幕区：滚轮可回看历史 -->
     <main id="subs" class="subs">
       <div class="hint" id="hint">
         <div class="hint-title">日语直播实时翻译</div>
@@ -38,6 +38,10 @@
         </div>
       </div>
     </main>
+
+    <!-- 回看历史时的浮层提示 -->
+    <button id="btn-bottom" class="jump hidden" title="回到最新字幕">↓ 最新</button>
+    <div id="scroll-hint" class="scroll-hint hidden"></div>
 
     <!-- 设置面板 -->
     <section id="panel" class="panel hidden">
@@ -115,7 +119,7 @@
         </div>
 
         <div class="group">
-          <div class="group-title">字幕外观</div>
+          <div class="group-title">字幕外观与回看</div>
           <label class="row">
             <span>中文大小 <b id="v-fs">30</b></span>
             <input id="set-fontSize" type="range" min="14" max="64" step="1" />
@@ -128,6 +132,19 @@
             <span>背景不透明度 <b id="v-op">0.82</b></span>
             <input id="set-opacity" type="range" min="0" max="1" step="0.02" />
           </label>
+          <label class="row">
+            <span>可见行数 <b id="v-ml">3</b></span>
+            <input id="set-maxLines" type="range" min="1" max="10" step="1" />
+          </label>
+          <label class="row">
+            <span>回看行数 <b id="v-hl">300</b></span>
+            <input id="set-historyLines" type="range" min="20" max="1000" step="20" />
+          </label>
+          <div class="dim small">
+            鼠标移到字幕上就能用滚轮往上翻看历史；往上翻时不会自动跳到最新，
+            点右下角「↓ 最新」或滚回底部恢复跟随。<br />
+            想一次看更多就把窗口拉大（拖右下角边缘）。
+          </div>
           <label class="row checkbox"><input id="set-showSource" type="checkbox" /><span>显示日文原文（双语字幕）</span></label>
           <label class="row checkbox"><input id="set-alwaysOnTop" type="checkbox" /><span>窗口置顶</span></label>
         </div>

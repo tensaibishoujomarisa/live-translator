@@ -53,7 +53,12 @@ function resolvePython() {
   const candidates = [];
   if (process.env.JP_LIVE_PYTHON) candidates.push(process.env.JP_LIVE_PYTHON);
 
-  // 1) 项目自带的虚拟环境（01_安装依赖.bat 会建在这里）
+  // 0) 发行版自带的运行时（打包后就是这种布局，优先级最高）
+  candidates.push(
+    path.join(PROJECT_ROOT, 'python', exe),
+    path.join(PROJECT_ROOT, 'python', 'bin', 'python')
+  );
+  // 1) 开发环境：项目里的虚拟环境（01_安装依赖.bat 会建在这里）
   candidates.push(
     path.join(PROJECT_ROOT, '.venv', 'Scripts', exe),
     path.join(PROJECT_ROOT, '.venv', 'bin', 'python'),
@@ -74,6 +79,10 @@ function resolvePython() {
   const existing = candidates.filter((c) => {
     try { return c && fs.existsSync(c); } catch (_) { return false; }
   });
+
+  // 发行版自带的解释器没装 pip 的检查脚本也能 import，直接信它
+  const bundled = existing.find((c) => c.startsWith(path.join(PROJECT_ROOT, 'python')));
+  if (bundled) return { python: bundled, verified: true };
 
   // 优先挑依赖齐全的那个
   for (const c of existing) {
@@ -103,6 +112,7 @@ let settings = {
   background: '#0b0b10',
   alwaysOnTop: true,
   maxLines: 3,
+  historyLines: 300,
   targetLang: '简体中文',
   provider: '',          // 留空表示「听 config.yaml 的」，避免 UI 默认值反过来覆盖配置
   asrModel: '',          // 同上：真正加载前会用 config.yaml 的值填上
@@ -236,7 +246,8 @@ function saveSettings() {
 function createWindow() {
   const { workArea } = screen.getPrimaryDisplay();
   const w = Math.min(1200, Math.round(workArea.width * 0.72));
-  const h = 240;
+  // 高度留够 3 行 + 顶部条；想看更多历史把窗口拉大即可（可滚动）
+  const h = Math.max(240, Math.round(Number(settings.maxLines || 3) * 68 + 60));
   win = new BrowserWindow({
     width: w,
     height: h,
@@ -249,6 +260,9 @@ function createWindow() {
     movable: true,
     skipTaskbar: false,
     alwaysOnTop: settings.alwaysOnTop,
+    // 太矮就看不见历史了
+    minHeight: 120,
+    minWidth: 320,
     backgroundColor: '#00000000',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),

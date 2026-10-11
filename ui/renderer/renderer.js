@@ -22,6 +22,8 @@ let clearTimer = null;
 let paused = false;
 let clickThrough = false;
 let statsSnapshot = null;
+// 是否跟随最新字幕（用户往上滚回看历史时置 false）
+let stickToBottom = true;
 // 后端「当前实际在跑什么」——用来确认设置真的生效了
 const runningInfo = { asr: '', translator: '', audio: '' };
 
@@ -98,6 +100,15 @@ function joinZh(a, b) {
   const right = b.replace(/^\s+/, '');
   if (!left) return right;
   if (!right) return left;
+
+  // 两边一模一样就别拼第二遍（后端重复投递时会走到这里，
+  // 屏幕上会显示成「字幕制作人 字幕制作人」）
+  if (left === right) return left;
+
+  // 已经是「前一句 + 后一句」的完整形态，就别再追加
+  if (right.startsWith(left)) return right;
+  if (left.endsWith(right)) return left;
+
   if (ZH_SENT_END.includes(left[left.length - 1])) return left + right;
   if ('，,、；;：:'.includes(left[left.length - 1])) return left + right;
   if (ZH_SENT_END.includes(right[0]) || '，,、；;：:'.includes(right[0])) return left + right;
@@ -105,15 +116,74 @@ function joinZh(a, b) {
 }
 
 function trimRows() {
-  const max = Math.max(1, Number(settings.maxLines) || 3);
-  while (rows.length > max) {
+  // 可见行数由 maxLines 控制，但 DOM 里保留更多历史供回看
+  const keep = Math.max(
+    Math.max(1, Number(settings.maxLines) || 3),
+    Math.max(10, Number(settings.historyLines) || 300)
+  );
+  if (rows.length <= keep) return;
+
+  // 从顶部裁掉时，把被裁掉的高度补回滚动位置，
+  // 否则正在回看历史的用户会被"往上跳"
+  const beforeTop = subsEl.scrollTop;
+  const beforeHeight = subsEl.scrollHeight;
+  let removed = 0;
+  while (rows.length > keep) {
     const r = rows.shift();
     if (r && r.el && r.el.parentNode) r.el.parentNode.removeChild(r.el);
+    removed++;
+  }
+  if (removed && !stickToBottom) {
+    const delta = beforeHeight - subsEl.scrollHeight;
+    subsEl.scrollTop = Math.max(0, beforeTop - delta);
   }
 }
 
-function scrollDown() {
+// ---------------------------------------------------------------- 滚动与跟随
+// 默认跟随最新字幕；用户往上滚回看历史时停住，滚回底部再恢复。
+function isAtBottom(slack = 40) {
+  return subsEl.scrollHeight - subsEl.scrollTop - subsEl.clientHeight <= slack;
+}
+
+function scrollDown(force) {
+  if (!force && !stickToBottom) return;
   subsEl.scrollTop = subsEl.scrollHeight;
+}
+
+function onScroll() {
+  const atBottom = isAtBottom();
+  const wasSticking = stickToBottom;
+  stickToBottom = atBottom;
+  el('btn-bottom').classList.toggle('hidden', atBottom);
+  if (atBottom && !wasSticking) {
+    // 刚回到最新，恢复跟随
+    scrollDown(true);
+  }
+  updateScrollHint();
+}
+
+function updateScrollHint() {
+  const box = el('scroll-hint');
+  if (!box) return;
+  if (stickToBottom) {
+    box.classList.add('hidden');
+    return;
+  }
+  // 用 rect 比较而不是 offsetTop：offsetTop 相对 offsetParent，
+  // 不含 margin-top:auto 撑出的那段空白，滚到最顶时会算错。
+  const top = subsEl.getBoundingClientRect().top + 4;
+  const above = rows.filter((r) => {
+    if (!r.el) return false;
+    return r.el.getBoundingClientRect().bottom <= top;
+  }).length;
+  box.textContent = above > 0 ? `↑ 还有 ${above} 条更早的` : '已到最早';
+  box.classList.remove('hidden');
+}
+
+function jumpToBottom() {
+  stickToBottom = true;
+  scrollDown(true);
+  onScroll();
 }
 
 function scheduleClear() {
@@ -121,8 +191,8 @@ function scheduleClear() {
   const ms = Number(settings.clearAfterMs) || 25000;
   if (ms <= 0) return;
   clearTimer = setTimeout(() => {
-    // 只有确实很久没新内容才清
-    if (Date.now() - lastEventAt >= ms) clearAll();
+    // 只有确实很久没新内容才清；正在回看历史时不清
+    if (Date.now() - lastEventAt >= ms && stickToBottom) clearAll();
   }, ms + 500);
 }
 
@@ -130,6 +200,9 @@ function clearAll() {
   rows.forEach((r) => r.el && r.el.parentNode && r.el.parentNode.removeChild(r.el));
   rows = [];
   currentId = 0;
+  stickToBottom = true;
+  el('btn-bottom').classList.add('hidden');
+  updateScrollHint();
 }
 
 // ---------------------------------------------------------------- 事件处理
@@ -369,6 +442,8 @@ function fillPanel() {
   set('set-gain', settings.gain);
   set('set-minSilence', settings.minSilenceMs);
   set('set-vadThreshold', settings.vadThreshold);
+  set('set-maxLines', settings.maxLines);
+  set('set-historyLines', settings.historyLines);
   set('set-asrModel', settings.asrModel);
   set('set-asrDevice', settings.asrDevice);
   set('set-provider', settings.provider);
@@ -392,6 +467,8 @@ function updateLabels() {
   el('v-fs').textContent = el('set-fontSize').value;
   el('v-sfs').textContent = el('set-sourceFontSize').value;
   el('v-op').textContent = Number(el('set-opacity').value).toFixed(2);
+  const ml = el('set-maxLines'); if (ml) el('v-ml').textContent = ml.value;
+  const hl = el('set-historyLines'); if (hl) el('v-hl').textContent = hl.value;
 }
 
 function collectPanel() {
@@ -406,6 +483,8 @@ function collectPanel() {
     llmModel: el('set-llmModel').value.trim(),
     apiKey: el('set-apiKey').value.trim(),
     contextSentences: Number(el('set-contextSentences').value),
+    maxLines: Number(el('set-maxLines').value),
+    historyLines: Number(el('set-historyLines').value),
     fontSize: Number(el('set-fontSize').value),
     sourceFontSize: Number(el('set-sourceFontSize').value),
     opacity: Number(el('set-opacity').value),
@@ -453,6 +532,10 @@ async function refreshDevices() {
 
 // ---------------------------------------------------------------- 交互
 function bindUI() {
+  // 滚动：用户往上滚就停止跟随，滚回底部恢复
+  subsEl.addEventListener('scroll', onScroll, { passive: true });
+  el('btn-bottom').onclick = (e) => { e.stopPropagation(); jumpToBottom(); };
+
   el('btn-set').onclick = () => {
     panelEl.classList.toggle('hidden');
     if (!panelEl.classList.contains('hidden')) {
@@ -487,8 +570,9 @@ function bindUI() {
 
   el('btn-refresh-dev').onclick = () => refreshDevices();
 
-  ['set-gain', 'set-minSilence', 'set-vadThreshold', 'set-contextSentences', 'set-fontSize', 'set-sourceFontSize', 'set-opacity']
-    .forEach((id) => { el(id).addEventListener('input', updateLabels); });
+  ['set-gain', 'set-minSilence', 'set-vadThreshold', 'set-contextSentences', 'set-fontSize',
+   'set-sourceFontSize', 'set-opacity', 'set-maxLines', 'set-historyLines']
+    .forEach((id) => { const n = el(id); if (n) n.addEventListener('input', updateLabels); });
 
   el('set-fontSize').addEventListener('input', () => {
     document.documentElement.style.setProperty('--fs', `${el('set-fontSize').value}px`);
