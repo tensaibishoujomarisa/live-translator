@@ -364,6 +364,51 @@ def _load_audio(p: Path):
 # ---------------------------------------------------------------- 主流程
 
 
+def _import_terms(cfg: Config, src_file: str) -> int:
+    """把候选术语文件**追加**进 glossary.yaml。
+
+    刻意走「追加」而不是整份重写：用户手写的注释、分组、alt 都要保住。
+    """
+    from .glossary import Glossary
+
+    src = Path(src_file)
+    if not src.exists():
+        print(f"[ERROR] 候选术语文件不存在：{src}")
+        return 1
+    dst_path = cfg.get_path("glossary", "path")
+    if not dst_path:
+        print("[ERROR] 配置里没有 glossary.path")
+        return 1
+
+    incoming = Glossary.load(src)
+    if not len(incoming):
+        print(f"[ERROR] {src.name} 里没解析出任何术语（检查 YAML 格式与缩进）")
+        return 1
+
+    target = Glossary.load(dst_path)
+    before = len(target)
+    print(f"候选术语 : {src}")
+    print(f"  解析出 {len(incoming)} 条")
+    print(f"目标术语表: {dst_path}")
+    print(f"  现有 {before} 条\n")
+
+    res = target.append_entries(incoming.entries)
+    added, skipped = res["added"], res["skipped"]
+
+    if added:
+        print(f"新增 {len(added)} 条：")
+        for ja in added:
+            print(f"  + {ja}")
+    if skipped:
+        print(f"\n跳过 {len(skipped)} 条（已存在，未改动）：")
+        for ja in skipped:
+            print(f"  = {ja}")
+    print(f"\n术语表：{before} -> {res['total']} 条")
+    print(f"原文件已备份为 {Path(str(dst_path) + '.bak').name}")
+    print("\n重启字幕程序后生效（术语表是启动时读取的）。")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser("jp-live-translator", description="日语直播实时翻译字幕（本地识别）")
     ap.add_argument("--config", default=None, help="配置文件路径（默认 config.yaml）")
@@ -390,6 +435,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="覆盖 learning.path（修正记录存放位置；发行版必须传，否则会写到别处）")
     ap.add_argument("--glossary-path", default=None,
                     help="覆盖 glossary.path（测试必须传，否则会改到用户真实的术语表）")
+    ap.add_argument("--import-terms", default=None, metavar="FILE",
+                    help="把 FILE 里的术语**追加**到 glossary.yaml（不动已有内容）后退出")
     ap.add_argument("--api-key", default=None, help="翻译 API Key（也可用环境变量）")
     ap.add_argument("--base-url", default=None, help="翻译 API base_url")
     ap.add_argument("--llm-model", default=None, help="翻译模型名")
@@ -579,6 +626,10 @@ def main(argv: list[str] | None = None) -> int:
 
     setup_logging(str(cfg.get("log", "level", default="info")),
                   str(cfg.get_path("log", "file")) if cfg.get("log", "file") else None)
+
+    # 导入候选术语：纯文件操作，不需要起识别引擎
+    if args.import_terms:
+        return _import_terms(cfg, args.import_terms)
 
     from backend.pipeline import Pipeline  # type: ignore
 

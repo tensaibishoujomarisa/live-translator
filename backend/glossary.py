@@ -1,4 +1,4 @@
-﻿"""术语表 / 人名对照表。
+"""术语表 / 人名对照表。
 
 两种用途：
   * LLM 翻译时作为 prompt 里的强制对照（最有效）
@@ -121,6 +121,72 @@ class Glossary:
     def has(self, ja: str) -> bool:
         a = (ja or "").strip()
         return any(e.ja.strip() == a for e in self.entries) if a else False
+
+    def append_entries(self, new: list["Entry"], path: str | Path | None = None) -> dict:
+        """把新条目**追加**到 glossary.yaml 末尾，不动任何已有内容。
+
+        为什么不用 write_entries：那个会整份重写，用户手写的注释、
+        分组、alt 列表全都会丢。追加式写入只加行，已有内容一个字节都不碰 ——
+        对「批量导入一份候选术语」这种场景安全得多。
+
+        返回 {"added": [...], "skipped": [...], "path": ..., "total": ...}
+        """
+        p = Path(path) if path else self.path
+        if p is None:
+            raise ValueError("没有指定 glossary 路径")
+        p = Path(p)
+
+        added: list[str] = []
+        skipped: list[str] = []
+        have = {e.ja.strip() for e in self.entries}
+        to_add: list[Entry] = []
+        for e in new:
+            ja = (e.ja or "").strip()
+            if not ja or not (e.zh or "").strip():
+                skipped.append(ja or "(空)")
+                continue
+            if ja in have:
+                skipped.append(ja)      # 已存在就不动它（改译法请去改原文件）
+                continue
+            have.add(ja)
+            to_add.append(e)
+        if not to_add:
+            return {"added": [], "skipped": skipped, "path": str(p),
+                    "total": len(self.entries)}
+
+        if p.exists():
+            try:
+                p.with_suffix(p.suffix + ".bak").write_bytes(p.read_bytes())
+            except Exception as exc:
+                log.debug("备份术语表失败：%s", exc)
+            text = p.read_text(encoding="utf-8")
+        else:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            text = "entries:\n"
+
+        if not re.search(r"(?m)^\s*entries\s*:", text):
+            if not text.endswith("\n"):
+                text += "\n"
+            text += "\nentries:\n"
+        if not text.endswith("\n"):
+            text += "\n"
+
+        lines = ["# ---- 以下由「导入候选术语」自动追加 ----"]
+        for e in to_add:
+            lines.append(f"  - ja: {_yaml_scalar(e.ja)}")
+            lines.append(f"    zh: {_yaml_scalar(e.zh)}")
+            if e.note:
+                lines.append(f"    note: {_yaml_scalar(e.note)}")
+            if e.alts:
+                alts = ", ".join(_yaml_scalar(a) for a in e.alts)
+                lines.append(f"    alt: [{alts}]")
+            added.append(e.ja.strip())
+
+        p.write_text(text + "\n".join(lines) + "\n", encoding="utf-8")
+        self.entries.extend(to_add)     # 同步内存，调用方不用重新加载
+        log.info("追加 %d 条术语 -> %s", len(added), p)
+        return {"added": added, "skipped": skipped, "path": str(p),
+                "total": len(self.entries)}
 
     def write_entries(self, path: str | Path | None = None) -> int:
         """把内存里的条目写回 glossary.yaml（按 ja 排序，保留文件头说明）。
