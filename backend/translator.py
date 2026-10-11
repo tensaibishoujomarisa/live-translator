@@ -1,4 +1,4 @@
-"""翻译后端。
+﻿"""翻译后端。
 
 两个可切换实现，接口一致：
   * LLMTranslator   —— 任何 OpenAI 兼容的 /chat/completions（DeepSeek、OpenAI、硅基流动…）
@@ -30,8 +30,10 @@ class Translator(ABC):
     # 连续失败多少次后熔断（避免 Key 失效时每句话刷一条错误）
     FAILURE_LIMIT = 4
 
-    def __init__(self, glossary: Glossary | None = None):
+    def __init__(self, glossary: Glossary | None = None,
+                 learning: "CorrectionStore | None" = None):
         self.glossary = glossary or Glossary([])
+        self.learning = learning
         self.stats = {"calls": 0, "chars": 0, "total_s": 0.0, "errors": 0}
         self._fail_streak = 0
         self._disabled_reason = ""
@@ -64,6 +66,16 @@ class Translator(ABC):
 
         t0 = time.time()
         gb = self.glossary.prompt_block() if self.glossary else ""
+        # 「越用越准」：把用户以前的修正作为少样本示例带进去。
+        # LLM 走 prompt 约束；本地 NMT 用不上 prompt，走下面的后处理替换。
+        if self.learning is not None:
+            try:
+                learned = self.learning.prompt_block(source)
+                if learned:
+                    head = "【用户以前的修正】（必须遵守）\n" + learned
+                    gb = (gb + "\n\n" + head) if gb else head
+            except Exception as exc:
+                log.debug("取修正示例失败：%s", exc)
         try:
             out = self._run(source, context_block, gb)
             self._fail_streak = 0
@@ -79,6 +91,12 @@ class Translator(ABC):
         out = clean_translation(out, source)
         if self.glossary:
             out = self.glossary.apply(out)
+        # 本地 NMT 拿不到 prompt，这里直接替换「用户改过的错译」
+        if self.learning is not None:
+            try:
+                out = self.learning.apply(out)
+            except Exception as exc:
+                log.debug("应用修正替换失败：%s", exc)
         if is_probably_source(out, source):
             log.debug("译文疑似原文回显，丢弃：%s", out[:40])
             out = ""
@@ -185,8 +203,9 @@ class LLMTranslator(Translator):
         retry: int = 1,
         extra_headers: dict[str, str] | None = None,
         glossary: Glossary | None = None,
+        learning=None,
     ):
-        super().__init__(glossary)
+        super().__init__(glossary, learning)
         self.base_url = (base_url or "").rstrip("/")
         self.api_key = api_key or ""
         self.model = model
@@ -360,8 +379,9 @@ class TransformersNmtTranslator(Translator):
         num_threads: int = 6,
         no_repeat_ngram_size: int = 4,
         glossary: Glossary | None = None,
+        learning=None,
     ):
-        super().__init__(glossary)
+        super().__init__(glossary, learning)
         self.model_dir = Path(model_dir)
         self.device = device if device in ("cpu", "cuda") else "cpu"
         self.num_beams = max(1, num_beams)
@@ -481,8 +501,9 @@ class LocalTranslator(Translator):
         num_workers: int = 1,
         target_prefix: str = "",
         glossary: Glossary | None = None,
+        learning=None,
     ):
-        super().__init__(glossary)
+        super().__init__(glossary, learning)
         self.model_dir = Path(model_dir)
         self.tokenizer_dir = Path(tokenizer_dir) if tokenizer_dir else self.model_dir
         self.device = device
@@ -583,6 +604,21 @@ def create_translator(cfg, logger_status: Callable[[str], None] | None = None) -
         enabled=bool(cfg.get("glossary", "enabled", default=True)),
     )
 
+    # 「越用越准」的修正库（可选）
+    learning = None
+    try:
+        from .learning import CorrectionStore
+
+        if bool(cfg.get("learning", "enabled", default=True)):
+            learning = CorrectionStore(
+                cfg.get_path("learning", "path"),
+                max_examples=int(cfg.get("learning", "max_examples", default=6)),
+            )
+            if len(learning):
+                status(f"已载入 {len(learning)} 条你的修正，翻译时会自动参考")
+    except Exception as exc:
+        log.debug("修正库不可用：%s", exc)
+
     if provider in ("off", "none", "disable", "disabled"):
         status("翻译已关闭，只显示日文")
         return NullTranslator(glossary)
@@ -602,6 +638,7 @@ def create_translator(cfg, logger_status: Callable[[str], None] | None = None) -
                 num_workers=int(cfg.get("translate", "local", "num_workers", default=1)),
                 target_prefix=str(cfg.get("translate", "local", "target_prefix", default="") or ""),
                 glossary=glossary,
+                learning=learning,
             )
         return TransformersNmtTranslator(
             model_dir=model_dir,
@@ -611,6 +648,7 @@ def create_translator(cfg, logger_status: Callable[[str], None] | None = None) -
             num_threads=int(cfg.get("translate", "local", "num_workers", default=6)),
             no_repeat_ngram_size=int(cfg.get("translate", "local", "no_repeat_ngram_size", default=4)),
             glossary=glossary,
+            learning=learning,
         )
 
     # 默认 LLM
@@ -630,4 +668,5 @@ def create_translator(cfg, logger_status: Callable[[str], None] | None = None) -
         retry=int(cfg.get("translate", "llm", "retry", default=1)),
         extra_headers=dict(cfg.get("translate", "llm", "extra_headers", default={}) or {}),
         glossary=glossary,
+        learning=learning,
     )

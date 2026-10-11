@@ -319,6 +319,8 @@ function buildArgs() {
   // 这几个后端也支持命令行覆盖，带上可以少依赖一次运行时 tune
   if (settings.minSilenceMs != null) args.push('--min-silence', String(settings.minSilenceMs));
   if (settings.contextSentences != null) args.push('--context-sentences', String(settings.contextSentences));
+  // 修正记录必须写进包内/项目目录，否则发行版会把用户数据写到别处
+  args.push('--learning-path', path.join(PROJECT_ROOT, 'data', 'corrections.jsonl'));
   return args;
 }
 
@@ -496,6 +498,27 @@ function applySettings(patch) {
 }
 
 ipcMain.handle('set-settings', (_e, patch) => applySettings(patch));
+
+// 「越用越准」：把一条修正转成后端能懂的 JSON 命令
+ipcMain.handle('correct', (_e, payload) => {
+  const p = payload || {};
+  if (!p.ja || !p.right) return { ok: false, error: '缺少原文或修正内容' };
+  const cmd = 'correct-json ' + JSON.stringify({
+    ja: String(p.ja),
+    wrong: String(p.wrong || ''),
+    right: String(p.right),
+    note: String(p.note || ''),
+    scope: p.asTerm ? 'term' : 'sentence'
+  });
+  const sent = sendCommand(cmd);
+  return { ok: sent, error: sent ? '' : '后端未运行' };
+});
+
+// 顺带问一下后端攒了多少修正（界面用来显示进度）
+ipcMain.handle('learn-stats', () => {
+  sendCommand('learn');
+  return { ok: true };
+});
 
 ipcMain.handle('send-command', (_e, cmd) => {
   const name = String(cmd || '').trim();

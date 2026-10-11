@@ -31,6 +31,11 @@ else:
 
 log = get_logger("jplt.main")
 
+# 当前进程的消息通道。_handle_command 等辅助函数需要用它发事件，
+# 但它们不是 Pipeline 的方法，拿不到实例 —— 用模块级引用最省事。
+# 之前忘了这层，导致 learn 命令抛 NameError 被 except 吞掉、事件根本没发出去。
+_bridge: Bridge | None = None
+
 
 # ---------------------------------------------------------------- 自检
 
@@ -381,6 +386,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--min-silence", type=int, default=None, help="覆盖 vad.min_silence_ms（断句灵敏度）")
     ap.add_argument("--vad-threshold", type=float, default=None, help="覆盖 vad.threshold")
     ap.add_argument("--context-sentences", type=int, default=None, help="覆盖 translate.context_sentences")
+    ap.add_argument("--learning-path", default=None,
+                    help="覆盖 learning.path（修正记录存放位置；发行版必须传，否则会写到别处）")
     ap.add_argument("--api-key", default=None, help="翻译 API Key（也可用环境变量）")
     ap.add_argument("--base-url", default=None, help="翻译 API base_url")
     ap.add_argument("--llm-model", default=None, help="翻译模型名")
@@ -409,6 +416,8 @@ def apply_cli_overrides(cfg: Config, args: argparse.Namespace) -> Config:
         ov.setdefault("vad", {})["threshold"] = args.vad_threshold
     if args.context_sentences is not None:
         ov.setdefault("translate", {})["context_sentences"] = args.context_sentences
+    if args.learning_path:
+        ov.setdefault("learning", {})["path"] = args.learning_path
     if args.api_key:
         ov.setdefault("translate", {}).setdefault("llm", {})["api_key"] = args.api_key
     if args.base_url:
@@ -458,8 +467,60 @@ def _handle_command(cmd: str, pipeline, server) -> None:
                 pipeline.update_tuning({"translate": {"context_sentences": int(rest[0])}})
             except ValueError:
                 log.warning("context 参数不是整数：%s", rest[0])
+    elif name == "learn":
+        # 查看「越用越准」攒了多少修正。
+        # 注意：**不能 print 到 stdout** —— stdout 是 JSONL 事件协议的通道，
+        # 混进非 JSON 的行会让按行解析的客户端（字幕窗 / SSE 转发）直接解析失败。
+        # 人类可读的输出交给 bridge 的 text 模式。
+        try:
+            stats = pipeline.learn_stats()
+            if _bridge is not None:
+                _bridge.emit("learn_stats", stats=stats)
+                _bridge.status(
+                    "learn",
+                    f"已记住 {stats.get('total', 0)} 条修正"
+                    + (f"，{stats.get('suggest_terms', 0)} 条建议加进术语表"
+                       if stats.get("suggest_terms") else ""),
+                )
+            else:
+                log.info("修正统计：%s", stats)
+        except Exception as exc:
+            log.warning("取修正统计失败：%s", exc)
+    elif name in ("correct", "fix", "correct-json"):
+        # GUI 走 correct-json（参数是 JSON，日语里出现 tab/空格都不会切错）；
+        # 终端调试可以用 tab 分隔的 correct。
+        if name == "correct-json":
+            raw = cmd.split(" ", 1)[1] if " " in cmd else ""
+            try:
+                payload = json.loads(raw)
+            except Exception as exc:
+                log.warning("correct-json 解析失败：%s", exc)
+                return
+            res = pipeline.add_correction(
+                ja=str(payload.get("ja") or ""),
+                right=str(payload.get("right") or ""),
+                wrong=str(payload.get("wrong") or ""),
+                note=str(payload.get("note") or ""),
+                scope=str(payload.get("scope") or "sentence"),
+            )
+            if not res.get("ok"):
+                log.warning("记录修正失败：%s", res.get("error"))
+            return
+        parts = cmd.split("\t")[1:] if "\t" in cmd else []
+        if len(parts) < 3:
+            log.warning("correct 需要 tab 分隔的 ja/wrong/right：%r", cmd[:80])
+        else:
+            ja, wrong, right = parts[0], parts[1], parts[2]
+            scope = parts[3].strip() if len(parts) > 3 else "sentence"
+            res = pipeline.add_correction(ja=ja, right=right, wrong=wrong, scope=scope)
+            if not res.get("ok"):
+                log.warning("记录修正失败：%s", res.get("error"))
     elif name == "status":
-        print(json.dumps({"counters": pipeline.counters, "paused": pipeline.paused}, ensure_ascii=False))
+        # 同样不能 print（见上面 learn 的说明），走 bridge 的 stats 事件
+        if _bridge is not None:
+            _bridge.stats(counters=pipeline.counters, paused=pipeline.paused)
+        else:
+            log.info("状态：%s", {"counters": pipeline.counters, "paused": pipeline.paused})
     elif name in ("quit", "exit"):
         raise KeyboardInterrupt
     else:
@@ -504,6 +565,8 @@ def main(argv: list[str] | None = None) -> int:
 
     mode = "text" if args.pretty else "jsonl"
     bridge = Bridge(mode=mode)
+    global _bridge
+    _bridge = bridge
     pipeline = Pipeline(cfg, bridge)
 
     server = None
@@ -597,6 +660,23 @@ def _http_command(name: str, payload: dict, pipeline) -> dict:
     if name == "tuning":
         pipeline.update_tuning(dict(payload.get("overrides") or {}))
         return {}
+    if name in ("correct", "fix"):
+        ja = str(payload.get("ja") or "").strip()
+        right = str(payload.get("right") or payload.get("text") or "").strip()
+        if not ja or not right:
+            raise ValueError("需要 ja 和 right")
+        res = pipeline.add_correction(
+            ja=ja,
+            right=right,
+            wrong=str(payload.get("wrong") or "").strip(),
+            note=str(payload.get("note") or "").strip(),
+            scope=str(payload.get("scope") or "sentence"),
+        )
+        if not res.get("ok"):
+            raise ValueError(res.get("error") or "记录失败")
+        return res
+    if name == "learn":
+        return {"learn": pipeline.learn_stats()}
     if name == "status":
         return {"counters": pipeline.counters, "paused": pipeline.paused}
     raise ValueError(f"未知命令 {name}")

@@ -12,6 +12,9 @@ contextBridge.exposeInMainWorld('jplt', {
   getSettings: () => ipcRenderer.invoke('get-settings'),
   setSettings: (patch) => ipcRenderer.invoke('set-settings', patch),
   sendCommand: (cmd) => ipcRenderer.invoke('send-command', cmd),
+  // 「越用越准」：记一条人工修正
+  correct: (payload) => ipcRenderer.invoke('correct', payload),
+  learnStats: () => ipcRenderer.invoke('learn-stats'),
   backendStatus: () => ipcRenderer.invoke('backend-status'),
   restartBackend: () => ipcRenderer.invoke('restart-backend'),
   listDevices: () => ipcRenderer.invoke('list-devices'),

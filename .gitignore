@@ -10,6 +10,10 @@ config.local.yaml
 .env.*
 secrets.json
 
+# ---- 用户数据：修正记录属于个人使用痕迹，不该进仓库 ----
+data/
+corrections.jsonl
+
 # ---- Python 虚拟环境 ----
 .venv/
 venv/

@@ -486,6 +486,58 @@ class Pipeline:
                 )
 
     # ---------------------------------------------------------------- 运行时控制
+    def add_correction(self, ja: str, right: str, wrong: str = "", note: str = "",
+                       scope: str = "sentence") -> dict:
+        """记下一条人工修正（「越用越准」的输入）。
+
+        记完立刻对**当前这个翻译器实例**生效：LLM 走 prompt 示例、
+        本地 NMT 走译文替换，都不需要重启。
+        """
+        if self.translator is None or getattr(self.translator, "learning", None) is None:
+            # 之前可能因为没启用而没建修正库，这里补建一个
+            from .learning import CorrectionStore
+
+            store = CorrectionStore(
+                self.cfg.get_path("learning", "path"),
+                max_examples=int(self.cfg.get("learning", "max_examples", default=6)),
+            )
+            if self.translator is not None:
+                self.translator.learning = store
+            else:
+                return {"ok": False, "error": "翻译器未初始化"}
+            store_obj = store
+        else:
+            store_obj = self.translator.learning
+
+        c = store_obj.add(ja=ja, right=right, wrong=wrong, note=note, scope=scope)
+        if c is None:
+            return {"ok": False, "error": "原文和修正不能为空，也不能完全相同"}
+
+        self.counters["corrections"] = self.counters.get("corrections", 0) + 1
+        stats = store_obj.stats()
+        self.bridge.emit("corrected", ja=c.ja, right=c.right, wrong=c.wrong,
+                         scope=c.scope, stats=stats)
+        # 顺带提示一下可以提升为术语表的候选
+        terms = store_obj.suggest_terms()
+        if terms and len(terms) <= 3:
+            names = "、".join(t.ja for t in terms)
+            self.bridge.status("learn", f"已记住修正（共 {stats['total']} 条）。"
+                                        f"「{names}」出现多次，建议加进术语表更可靠")
+        else:
+            self.bridge.status("learn", f"已记住修正（共 {stats['total']} 条）")
+        return {"ok": True, "stats": stats}
+
+    def learn_stats(self) -> dict:
+        if self.translator is None or getattr(self.translator, "learning", None) is None:
+            return {"total": 0, "enabled": False}
+        s = self.translator.learning.stats()
+        s["enabled"] = True
+        s["suggestions"] = [
+            {"ja": c.ja, "right": c.right, "wrong": c.wrong}
+            for c in self.translator.learning.suggest_terms()
+        ][:10]
+        return s
+
     def set_paused(self, paused: bool) -> bool:
         """暂停 = 停止识别（音频仍被采集但直接丢弃），用于接电话/走开。"""
         self.paused = bool(paused)

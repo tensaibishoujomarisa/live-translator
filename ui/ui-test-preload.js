@@ -31,6 +31,8 @@ const settings = {
 
 const commands = [];
 
+const corrections = [];
+
 contextBridge.exposeInMainWorld('jplt', {
   onEvent: (cb) => {
     listeners.push(cb);
@@ -55,7 +57,10 @@ contextBridge.exposeInMainWorld('jplt', {
   setClickThrough: () => {},
   quitApp: () => {},
   openLog: () => {},
-  openExternal: () => {}
+  openExternal: () => {},
+  // 「越用越准」
+  correct: async (payload) => { corrections.push(payload); return { ok: true }; },
+  learnStats: async () => ({ ok: true })
 });
 
 // 主进程用这个把合成事件喂进来

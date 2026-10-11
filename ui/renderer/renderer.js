@@ -54,6 +54,14 @@ function makeRow(id) {
   const zh = document.createElement('div');
   zh.className = 'zh pending';
 
+  // 「越用越准」入口：悬停时出现，点开可以直接改这条译文
+  const fix = document.createElement('button');
+  fix.className = 'fix-btn';
+  fix.textContent = '✏';
+  fix.title = '改这条译文（改过之后它会记住）';
+  fix.onclick = (e) => { e.stopPropagation(); openFixPop(id); };
+
+  div.appendChild(fix);
   div.appendChild(ja);
   div.appendChild(zh);
 
@@ -137,6 +145,68 @@ function trimRows() {
     const delta = beforeHeight - subsEl.scrollHeight;
     subsEl.scrollTop = Math.max(0, beforeTop - delta);
   }
+}
+
+// ---------------------------------------------------------------- 修正（越用越准）
+let fixTarget = null;   // 正在修正的行
+
+function openFixPop(rowId) {
+  const row = findRow(rowId, false);
+  if (!row) return;
+  if (!row.ja && !row.zh) return;
+  fixTarget = row;
+  el('fix-ja').textContent = row.ja || '(无日文原文)';
+  el('fix-wrong').textContent = row.zh || '(还没出译文)';
+  const input = el('fix-right');
+  input.value = row.zh || '';
+  el('fix-as-term').checked = false;
+  el('fix-note').textContent = '';
+  el('fix-pop').classList.remove('hidden');
+  // 让用户能直接开始打字
+  setTimeout(() => { input.focus(); input.select(); }, 30);
+}
+
+function closeFixPop() {
+  el('fix-pop').classList.add('hidden');
+  fixTarget = null;
+}
+
+async function saveFix() {
+  if (!fixTarget) return;
+  const right = el('fix-right').value.trim();
+  const ja = fixTarget.ja || '';
+  const wrong = fixTarget.zh || '';
+  const note = el('fix-note');
+
+  if (!right) {
+    note.textContent = '请填写正确的译文';
+    return;
+  }
+  if (right === wrong) {
+    note.textContent = '和原来一样，没有需要记住的东西';
+    return;
+  }
+  if (!ja) {
+    note.textContent = '这条没有日文原文，没法作为参考';
+    return;
+  }
+
+  const asTerm = el('fix-as-term').checked;
+  note.textContent = '保存中…';
+  const res = await api.correct({ ja, wrong, right, asTerm });
+  if (!res || !res.ok) {
+    note.textContent = '保存失败：' + ((res && res.error) || '未知错误');
+    return;
+  }
+
+  // 立刻反映到界面上，让用户看到确实生效了
+  fixTarget.zh = right;
+  fixTarget.zhEl.textContent = right;
+  setMeta(fixTarget);
+  note.textContent = asTerm
+    ? '已记住，并提示加到术语表'
+    : '已记住，以后同类句子会自动参考';
+  setTimeout(closeFixPop, 900);
 }
 
 // ---------------------------------------------------------------- 滚动与跟随
@@ -376,6 +446,20 @@ function onEvent(msg) {
       clearAll();
       break;
 
+    case 'learn_stats': {
+      const s = (msg && msg.stats) || {};
+      const n = Number(s.total || 0);
+      const sug = (s.suggestions || []).length;
+      el('learn-note').textContent = s.enabled === false
+        ? '修正功能未启用'
+        : `已记住 ${n} 条` + (sug ? `，其中 ${sug} 条建议加进术语表` : '');
+      break;
+    }
+
+    case 'corrected':
+      // 保存成功后的回执（弹层里已经给了即时反馈，这里不重复弹）
+      break;
+
     case 'clickthrough':
       clickThrough = !!msg.value;
       el('btn-click').classList.toggle('active', clickThrough);
@@ -569,6 +653,22 @@ function bindUI() {
   el('btn-hide').onclick = () => api.sendCommand('hide-window');
 
   el('btn-refresh-dev').onclick = () => refreshDevices();
+
+  // 修正弹层
+  el('fix-cancel').onclick = () => closeFixPop();
+  el('fix-save').onclick = () => saveFix();
+  el('fix-right').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); saveFix(); }
+    if (e.key === 'Escape') { e.preventDefault(); closeFixPop(); }
+  });
+
+  // 顺手回个「攒了多少修正」的提示
+  el('btn-learn').onclick = async () => {
+    el('learn-note').textContent = '查询中…';
+    const s = await api.learnStats();
+    if (!s || !s.ok) el('learn-note').textContent = '后端未运行';
+    // 真正的数字由 learn_stats 事件回来后再填
+  };
 
   ['set-gain', 'set-minSilence', 'set-vadThreshold', 'set-contextSentences', 'set-fontSize',
    'set-sourceFontSize', 'set-opacity', 'set-maxLines', 'set-historyLines']

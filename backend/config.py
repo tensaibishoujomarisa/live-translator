@@ -133,6 +133,15 @@ DEFAULTS: dict[str, Any] = {
         "path": "glossary.yaml",
         "max_entries_in_prompt": 80,
     },
+    "learning": {
+        # 「越用越准」：把用户的修正沉淀成示例，翻译时自动参考。
+        # 注意这不是训练模型权重 —— 见 backend/learning.py 顶部说明。
+        "enabled": True,
+        # 相对路径按项目根解析
+        "path": "data/corrections.jsonl",
+        # 每次翻译最多塞几条修正示例（太多会挤占 prompt、拖慢速度）
+        "max_examples": 6,
+    },
     "subtitle": {
         # 字幕窗：丢给 Electron 的默认参数
         "font_size": 30,

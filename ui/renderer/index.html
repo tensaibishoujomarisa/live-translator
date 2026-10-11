@@ -43,6 +43,31 @@
     <button id="btn-bottom" class="jump hidden" title="回到最新字幕">↓ 最新</button>
     <div id="scroll-hint" class="scroll-hint hidden"></div>
 
+    <!-- 修正弹层：鼠标移到某条字幕上点 ✏ 后出现 -->
+    <div id="fix-pop" class="fix-pop hidden">
+      <div class="fix-head">
+        <strong>改这条译文</strong>
+        <span class="dim small">改过之后它会记住，以后同类句子自动参考</span>
+        <button id="fix-cancel" class="ibtn">✕</button>
+      </div>
+      <div class="fix-body">
+        <div class="fix-row"><span class="fix-label">日语</span><span id="fix-ja" class="fix-src"></span></div>
+        <div class="fix-row"><span class="fix-label">原译</span><span id="fix-wrong" class="fix-wrong"></span></div>
+        <label class="fix-row">
+          <span class="fix-label">改成</span>
+          <input id="fix-right" type="text" placeholder="输入正确的译文" />
+        </label>
+        <label class="fix-row checkbox">
+          <input id="fix-as-term" type="checkbox" />
+          <span>这是专有名词/人名（会同时建议加进术语表，更可靠）</span>
+        </label>
+        <div class="fix-foot">
+          <button id="fix-save" class="sbtn primary">记住这条</button>
+          <span id="fix-note" class="dim small"></span>
+        </div>
+      </div>
+    </div>
+
     <!-- 设置面板 -->
     <section id="panel" class="panel hidden">
       <div class="panel-head">
@@ -116,6 +141,19 @@
             <span>上下文句数 <b id="v-ctx">4</b></span>
             <input id="set-contextSentences" type="range" min="0" max="10" step="1" />
           </label>
+        </div>
+
+        <div class="group">
+          <div class="group-title">越用越准</div>
+          <div class="dim small">
+            鼠标移到某条字幕上，点右上角的 <b>✏</b> 就能改这条译文。<br />
+            改过之后它会记住，以后遇到同类句子会自动参考你的改法。<br />
+            专有名词/人名勾上「这是专有名词」，效果比整句示例更可靠。
+          </div>
+          <div class="row">
+            <button id="btn-learn" class="sbtn">查看已记住多少条</button>
+            <span id="learn-note" class="dim small"></span>
+          </div>
         </div>
 
         <div class="group">
