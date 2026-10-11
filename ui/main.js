@@ -234,8 +234,18 @@ function loadSettings() {
     }
   } catch (e) { /* 坏文件就当默认值 */ }
   if (settings.clearAfterMs == null) settings.clearAfterMs = 25000;
-  if (!settings.asrModel) settings.asrModel = 'large-v3-turbo';
-  if (!settings.asrDevice) settings.asrDevice = 'cuda';
+  // 刻意**不**给 asrModel / asrDevice 设硬编码默认值。
+  //
+  // 踩过的坑：以前这里写了 asrModel = 'large-v3-turbo'、asrDevice = 'cuda'，
+  // 而 buildArgs 会把它作为 `--model` / `--device` 传给后端 ——
+  // 命令行参数会**覆盖包内 config.yaml**。后果是：
+  // 发行版 config 里明明是 small、包里也只带了 small，
+  // 后端却因为收到 --model large-v3-turbo 而去 HuggingFace
+  // **下载 1.5GB**（实测下到 613MB 中断，留下一个 .incomplete 垃圾文件，
+  // 用户看到的现象就是「启动卡住」，而且包里凭空多了几百 MB）。
+  //
+  // 留空 = 不传参数 = 以 config.yaml 为准。发行版 config 写的是 small，
+  // 开发机 config 写的是 large-v3-turbo（本机有 GPU 和缓存），两边都对。
   if (!settings.provider) settings.provider = 'llm';
 }
 function saveSettings() {
@@ -307,8 +317,10 @@ function setClickThrough(on) {
 // ---------------------------------------------------------------- Python 后端
 function buildArgs() {
   const args = ['-u', '-m', 'backend.main', '--stdin-commands', '--serve'];
-  args.push('--model', settings.asrModel);
-  args.push('--device', settings.asrDevice);
+  // 只在用户**显式**设置过时才传，否则留空让 config.yaml 决定。
+  // （传了就会覆盖 config，见 loadSettings 里那段说明）
+  if (settings.asrModel) args.push('--model', settings.asrModel);
+  if (settings.asrDevice) args.push('--device', settings.asrDevice);
   if (settings.provider) args.push('--provider', settings.provider);
   if (settings.targetLang) args.push('--target-lang', settings.targetLang);
   if (settings.audioDevice) args.push('--audio-device', settings.audioDevice);
@@ -336,6 +348,43 @@ function liveTuneArgs() {
     cmds.push(`context ${Math.round(settings.contextSentences)}`);
   }
   return cmds;
+}
+
+/**
+ * 把 HuggingFace 相关的环境变量一次性设好。
+ *
+ * 背景（踩过的坑）：启动脚本里设了 HF_HOME，但后端是 Electron 自己 spawn 的，
+ * 那些变量传不进来 —— 于是 faster-whisper 找不到包内已下载的模型，
+ * 跑去 HuggingFace 联网解析，启动从 1.5 秒变成 61.5 秒，
+ * 而且号称"离线版"的包其实在偷偷联网。
+ *
+ * 更要命的一次：配置里是 large-v3-turbo、包里只带了 small，
+ * 结果它开始下载 1.5GB，下到 429MB 被中断，留下一个
+ * blobs/*.incomplete 垃圾文件，用户看到的现象就是"启动卡住"。
+ * 所以这里在模型已在本地时强制 HF_HUB_OFFLINE。
+ */
+function applyHuggingFaceEnv(env) {
+  const modelsDir = path.join(PROJECT_ROOT, 'models');
+  env.HF_HOME = env.HF_HOME || modelsDir;
+  env.HUGGINGFACE_HUB_CACHE = env.HUGGINGFACE_HUB_CACHE || modelsDir;
+  try {
+    const hasLocal = fs.existsSync(modelsDir) &&
+      fs.readdirSync(modelsDir).some((n) => n.startsWith('models--'));
+    if (hasLocal) env.HF_HUB_OFFLINE = '1';
+  } catch (_) {}
+}
+
+function childEnv() {
+  const env = { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' };
+  // ELECTRON_RUN_AS_NODE 若被置上，会传染给子进程里的 Node 行为，一并清掉
+  delete env.ELECTRON_RUN_AS_NODE;
+  // 注意：`backend.main --list-devices / --doctor` 这类短命令也要走这里。
+  // 之前 env 是在两个 spawn 里各拼一份的，结果只给其中一处加了
+  // HF_HUB_OFFLINE，另一处照样联网找模型。统一从这儿出，别再各拼一份。
+  delete env.HTTP_PROXY; delete env.HTTPS_PROXY; delete env.ALL_PROXY;
+  delete env.http_proxy; delete env.https_proxy; delete env.all_proxy;
+  applyHuggingFaceEnv(env);
+  return env;
 }
 
 function startBackend() {
@@ -367,15 +416,7 @@ function startBackend() {
   // 启动脚本里虽然设了 HF_HOME，但后端是 Electron 自己 spawn 的，那些变量不会传进来，
   // 于是 faster-whisper 找不到已下载的模型，跑去 HuggingFace 联网解析 ——
   // 实测让启动从 1.5 秒变成 61.5 秒，而且"离线版"其实在偷偷联网。
-  const modelsDir = path.join(PROJECT_ROOT, 'models');
-  env.HF_HOME = env.HF_HOME || modelsDir;
-  env.HUGGINGFACE_HUB_CACHE = env.HUGGINGFACE_HUB_CACHE || modelsDir;
-  // 模型已经在包里了就别再联网检查更新（没有模型的场景仍允许下载）
-  try {
-    const hasLocal = fs.existsSync(modelsDir) &&
-      fs.readdirSync(modelsDir).some((n) => n.startsWith('models--'));
-    if (hasLocal) env.HF_HUB_OFFLINE = '1';
-  } catch (_) {}
+  applyHuggingFaceEnv(env);
 
   child = spawn(py, buildArgs(), {
     cwd: PROJECT_ROOT,
@@ -556,10 +597,7 @@ ipcMain.handle('list-devices', () => {
   if (!py) return { ok: false, error: '找不到 Python' };
   const r = spawnSync(py, ['-m', 'backend.main', '--list-devices', '--json'], {
     cwd: PROJECT_ROOT, encoding: 'utf8', timeout: 40000,
-    env: {
-      ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1',
-      HF_HOME: path.join(PROJECT_ROOT, 'models')
-    }
+    env: childEnv()
   });
   const out = (r.stdout || '').trim();
   if (!out) {

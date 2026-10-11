@@ -435,6 +435,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="覆盖 learning.path（修正记录存放位置；发行版必须传，否则会写到别处）")
     ap.add_argument("--glossary-path", default=None,
                     help="覆盖 glossary.path（测试必须传，否则会改到用户真实的术语表）")
+    ap.add_argument("--force-cpu", action="store_true",
+                    help="强制 device=cpu（模拟没有显卡的机器，用于验证发行版行为）")
     ap.add_argument("--import-terms", default=None, metavar="FILE",
                     help="把 FILE 里的术语**追加**到 glossary.yaml（不动已有内容）后退出")
     ap.add_argument("--api-key", default=None, help="翻译 API Key（也可用环境变量）")
@@ -469,6 +471,8 @@ def apply_cli_overrides(cfg: Config, args: argparse.Namespace) -> Config:
         ov.setdefault("learning", {})["path"] = args.learning_path
     if args.glossary_path:
         ov.setdefault("glossary", {})["path"] = args.glossary_path
+    if getattr(args, "force_cpu", False):
+        ov.setdefault("asr", {})["device"] = "cpu"
     if args.api_key:
         ov.setdefault("translate", {}).setdefault("llm", {})["api_key"] = args.api_key
     if args.base_url:

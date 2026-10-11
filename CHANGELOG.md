@@ -2,6 +2,54 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.2.3] - 2026-10-12
+
+这一版修的都是**打开发行版才会碰到、而且一碰就废**的问题。
+
+### 修复
+
+- **发行版一启动就崩（最严重）**：`device: auto` 先把 device 设成 `cuda`
+  算出 `compute_type = float16`，接着发现没有 CUDA 运行库又把 device 改成
+  `cpu`，但 `compute_type` **没跟着改** —— 于是 CPU + float16，
+  ctranslate2 直接拒绝：
+
+  ```
+  ValueError: Requested float16 compute type, but the target device
+              or backend do not support efficient float16 computation.
+  ```
+
+  崩在 `ensure_loaded` 里，用户看到的现象是「软件起来了但没有字幕」。
+  现在 device 每次变化都重新算 compute_type（`_pick_compute_type`），
+  并且 CPU 上会拒绝纯 float16 / float32（`int8_float16` 合法，保留）。
+
+- **Electron 硬编码默认模型，导致离线包偷偷下载 1.5GB**：
+  `ui/main.js` 里写着 `settings.asrModel = 'large-v3-turbo'`，
+  而 `buildArgs()` 把它作为 `--model` 传下去 —— **命令行参数会覆盖包内
+  config.yaml**。后果：发行版 config 写的是 `small`、包里也只带了 `small`，
+  后端却去 HuggingFace 下载 1.5GB（实测下到 613MB 中断，在包里留下一个
+  `.incomplete` 垃圾文件，用户看到的是「启动卡住」）。
+  现在默认不传 `--model` / `--device`，以 config.yaml 为准
+  （发行版是 small，开发机是 large-v3-turbo，两边都对）。
+
+- **`--list-devices` 那条 spawn 自己拼了一份 env**，漏掉 `HF_HUB_OFFLINE`，
+  于是打开设置面板拉设备列表时照样联网找模型。统一走 `childEnv()`。
+
+- **`HF_HUB_CACHE` 语义用错了**（原 `HUGGINGFACE_HUB_CACHE`）：
+  缓存根目录应该由 `HF_HOME`（→ `$HF_HOME/hub`）表达。
+
+- 模型已在本地缓存时自动设 `HF_HUB_OFFLINE`；但**只在目录内容完整时**才认
+  （`models--*/snapshots/*/model.bin` 存在），只有 `blobs/*.incomplete`
+  不算。而且万一离线标记导致加载失败（缓存目录看着有其实不全），
+  会撤销标记重试一次，不会把「本来能下载」变成硬失败。
+
+### 新增
+
+- `--force-cpu` 参数：强制 `device=cpu`，用来在**有显卡的机器上**复现
+  无显卡机器的行为（这次的崩溃就是因为本机有 GPU 一直测不出来）
+- `scripts/test_compute_type.py`（15 项）：锁死 device/compute_type 组合规则
+- `scripts/test_offline_guard.py`（11 项）：缓存识别、不完整下载不误判、
+  离线标记的置位与回退
+
 ## [0.2.2] - 2026-10-12
 
 ### 新增

@@ -8,9 +8,11 @@
 """
 from __future__ import annotations
 
+import os
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -62,6 +64,29 @@ class AsrResult:
         return d
 
 
+def _model_in_local_cache(model_name: str, models_root: str | None) -> bool:
+    """判断模型是否已经在本地缓存里（有完整快照）。
+
+    faster-whisper 的缓存目录是 models--<org>--<repo>/snapshots/<rev>/，
+    里面必须有 model.bin 才算完整 —— 只有 blobs/*.incomplete 说明上次下载中断了。
+    """
+    if not models_root:
+        return False
+    root = Path(models_root)
+    if not root.is_dir():
+        return False
+    # 模型名可能是 "large-v3-turbo"、"Systran/faster-whisper-small"、
+    # 或一个本地目录路径 —— 只处理前两种
+    tail = model_name.replace("/", "--").split("--")[-1].lower()
+    for d in root.glob("models--*"):
+        if tail and tail not in d.name.lower():
+            continue
+        for snap in (d / "snapshots").glob("*"):
+            if (snap / "model.bin").exists():
+                return True
+    return False
+
+
 class AsrEngine:
     """懒加载的 Whisper 包装。模型加载一次，之后线程安全复用。"""
 
@@ -81,9 +106,11 @@ class AsrEngine:
         on_status=None,
     ):
         self.model_name = model
+        self._offline_forced = False
         self.device = device or "auto"
+        self._auto_device = str(self.device).lower() in ("auto", "")
         # "auto"：有可用 CUDA 就用 GPU，否则 CPU（发行版默认走这条路）
-        if str(self.device).lower() in ("auto", ""):
+        if self._auto_device:
             self.device = "cuda"
             try:
                 from .cuda_setup import prepare_cuda_dlls, preload_torch
@@ -95,7 +122,11 @@ class AsrEngine:
                     self.device = "cpu"
             except Exception:
                 self.device = "cpu"
-        self.compute_type = compute_type or (cpu_compute_type if self.device == "cpu" else "float16")
+        self.cpu_compute_type = cpu_compute_type
+        # 记下用户**配置**的值（可能为空）。device 每次变化都要用它重算
+        # compute_type —— 详见 _pick_compute_type 的说明。
+        self._configured_compute = compute_type or ""
+        self.compute_type = self._pick_compute_type(self._configured_compute)
         self.beam_size_final = beam_size_final
         self.no_speech_threshold = no_speech_threshold
         self.log_prob_threshold = log_prob_threshold
@@ -112,6 +143,32 @@ class AsrEngine:
         self.stats = {"calls": 0, "audio_s": 0.0, "compute_s": 0.0, "dropped": 0}
 
     # ---------- 模型 ----------
+    def _pick_compute_type(self, configured: str = "") -> str:
+        """按**当前** device 选计算精度。
+
+        踩过的坑：原来只有一行
+            compute_type or (cpu_compute_type if device == "cpu" else "float16")
+        在 `device: auto` 下会算错 —— auto 先把 device 设成 "cuda" 算出 float16，
+        之后发现没有 CUDA 运行库又把 device 改成 "cpu"，但 compute_type
+        还留着 float16。结果是 CPU + float16，直接抛：
+
+            ValueError: Requested float16 compute type, but the target device
+                        or backend do not support efficient float16 computation.
+
+        表现是发行版**一启动就崩**（而且崩在 ensure_loaded，用户看到的是没字幕）。
+        所以 device 每次变化都必须重新算一遍这个值。
+        """
+        if self.device == "cpu":
+            # CPU 上纯 float16 不可用（ctranslate2 直接拒绝）。
+            # int8_float16 是合法的（int8 权重 + 内部 fp16 计算），保留。
+            if configured in ("int8_float16", "int8_bfloat16"):
+                return configured
+            if configured and "float16" not in configured and "float32" not in configured:
+                return configured
+            return self.cpu_compute_type or "int8"
+        # GPU：用户显式配了就尊重，否则 float16（显存不够可改 int8_float16）
+        return configured or "float16"
+
     def ensure_loaded(self) -> None:
         if self._model is not None:
             return
@@ -136,11 +193,25 @@ class AsrEngine:
                             "或用带 GPU 支持的发行版。"
                         )
                         self.device = "cpu"
-                        self.compute_type = "int8"
+                        self.compute_type = self._pick_compute_type(self._configured_compute)
                 except Exception as exc:
                     log.debug("CUDA 准备失败: %s", exc)
 
             from faster_whisper import WhisperModel
+
+            # 模型已经在本地缓存里就别联网。
+            # 不这么做的话：配置写 large-v3-turbo、但包里只带了 small 时，
+            # 它会**去下载 1.5GB**（发行版实测下到 429MB 才断，留下一个
+            # blobs/*.incomplete 垃圾文件，用户看到的现象是「启动卡住」）。
+            #
+            # 注意：只看目录存在是不够的 —— 缓存缺了 HF 的 refs 元数据时
+            # 目录看着有、实际仍会加载失败。所以这条路走不通要能回退：
+            # 用 "0" 记住「这次是我们自己设的」，加载失败时撤销并重试一次。
+            self._offline_forced = False
+            if self.models_root and _model_in_local_cache(self.model_name, self.models_root):
+                if not os.environ.get("HF_HUB_OFFLINE"):
+                    os.environ["HF_HUB_OFFLINE"] = "1"
+                    self._offline_forced = True
 
             t0 = time.time()
             self._on_status(f"加载识别模型 {self.model_name} ({self.device}/{self.compute_type}) …")
@@ -152,6 +223,17 @@ class AsrEngine:
             try:
                 self._model = WhisperModel(self.model_name, **kwargs)
             except Exception as exc:
+                # 我们自己设的离线标记导致加载失败（缓存目录看着有、其实不完整）：
+                # 撤销标记并重试一次，别把本来能下载的情况变成硬失败。
+                if self._offline_forced and "offline" in str(exc).lower():
+                    log.warning("本地缓存不完整（%s），撤销离线模式重试", exc)
+                    os.environ["HF_HUB_OFFLINE"] = "0"
+                    self._offline_forced = False
+                    self._model = WhisperModel(self.model_name, **kwargs)
+                    self._load_s = time.time() - t0
+                    log.info("模型就绪（联网获取），用时 %.1fs", self._load_s)
+                    self._on_status(f"识别模型就绪（{self._load_s:.1f}s）")
+                    return
                 msg = str(exc).lower()
                 cuda_problem = any(
                     k in msg for k in ("cublas", "cudnn", "cuda", "not found or cannot be loaded")
@@ -166,8 +248,8 @@ class AsrEngine:
                     else:
                         self._on_status(f"GPU 加载失败，改用 CPU：{exc}")
                     self.device = "cpu"
-                    self.compute_type = "int8"
-                    kwargs.update(device="cpu", compute_type="int8")
+                    self.compute_type = self._pick_compute_type(self._configured_compute)
+                    kwargs.update(device="cpu", compute_type=self.compute_type)
                     self._model = WhisperModel(self.model_name, **kwargs)
                 else:
                     raise
@@ -211,9 +293,9 @@ class AsrEngine:
             from faster_whisper import WhisperModel
 
             self.device = "cpu"
-            self.compute_type = "int8"
+            self.compute_type = self._pick_compute_type()
             self._model = WhisperModel(
-                self.model_name, device="cpu", compute_type="int8",
+                self.model_name, device="cpu", compute_type=self.compute_type,
                 download_root=self.models_root,
             )
             self._on_status(
