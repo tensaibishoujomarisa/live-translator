@@ -67,5 +67,6 @@ contextBridge.exposeInMainWorld('jplt', {
 contextBridge.exposeInMainWorld('__uiTest', {
   emit: (msg) => { listeners.forEach((cb) => { try { cb(msg); } catch (_) {} }); },
   listenerCount: () => listeners.length,
-  commands: () => commands.slice()
+  commands: () => commands.slice(),
+  corrections: () => corrections.slice()
 });

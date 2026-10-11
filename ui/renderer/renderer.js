@@ -149,8 +149,14 @@ function trimRows() {
 
 // ---------------------------------------------------------------- 修正（越用越准）
 let fixTarget = null;   // 正在修正的行
+let fixCloseTimer = null;
 
 function openFixPop(rowId) {
+  // 先取消上一次保存留下的自动关闭定时器。
+  // 否则「保存后 0.9 秒内想再改一条」会被上一个定时器莫名关掉弹层
+  // （实测就是这个原因导致空值校验测试失败）。
+  if (fixCloseTimer) { clearTimeout(fixCloseTimer); fixCloseTimer = null; }
+
   const row = findRow(rowId, false);
   if (!row) return;
   if (!row.ja && !row.zh) return;
@@ -167,6 +173,7 @@ function openFixPop(rowId) {
 }
 
 function closeFixPop() {
+  if (fixCloseTimer) { clearTimeout(fixCloseTimer); fixCloseTimer = null; }
   el('fix-pop').classList.add('hidden');
   fixTarget = null;
 }
@@ -206,7 +213,8 @@ async function saveFix() {
   note.textContent = asTerm
     ? '已记住，并提示加到术语表'
     : '已记住，以后同类句子会自动参考';
-  setTimeout(closeFixPop, 900);
+  if (fixCloseTimer) clearTimeout(fixCloseTimer);
+  fixCloseTimer = setTimeout(closeFixPop, 900);
 }
 
 // ---------------------------------------------------------------- 滚动与跟随

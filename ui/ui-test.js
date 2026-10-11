@@ -169,6 +169,127 @@ async function run() {
   })()`);
   check('后端不累积时前端自己拼接', appended === '测试第一句。测试第二句', String(appended));
 
+  // ---------- 越用越准：悬停修正 ----------
+  console.log('\n[越用越准]');
+  await emit({
+    kind: 'final', id: 500, compute_ms: 200,
+    text: 'ぺこらはかわいい'
+  });
+  await sleep(60);
+  await emit({ kind: 'translation', id: 500, latency_ms: 200, text: '佩科拉很可爱' });
+  await sleep(200);
+
+  const fixBtn = await js(`(() => {
+    const r = document.querySelectorAll('#subs .line');
+    const last = r[r.length - 1];
+    const b = last.querySelector('.fix-btn');
+    return { exists: !!b, css: getComputedStyle(last).position };
+  })()`);
+  check('每行都有修正按钮', fixBtn.exists === true);
+  check('行定位为 relative（按钮才能贴右上角）', fixBtn.css === 'relative', fixBtn.css);
+
+  const popHiddenWhenClosed = await js(
+    `document.querySelector('#fix-pop').classList.contains('hidden')`);
+  check('修正弹层默认隐藏', popHiddenWhenClosed === true);
+
+  // 点 ✏ 打开
+  await js(`(() => {
+    const r = document.querySelectorAll('#subs .line');
+    r[r.length - 1].querySelector('.fix-btn').click();
+  })()`);
+  await sleep(250);
+  const pop = await js(`(() => ({
+    hidden: document.querySelector('#fix-pop').classList.contains('hidden'),
+    ja: document.querySelector('#fix-ja').textContent,
+    wrong: document.querySelector('#fix-wrong').textContent,
+    val: document.querySelector('#fix-right').value
+  }))()`);
+  check('点 ✏ 打开弹层', pop.hidden === false);
+  check('弹层显示日语原文', pop.ja === 'ぺこらはかわいい', pop.ja);
+  check('弹层显示原来的错译', pop.wrong === '佩科拉很可爱', pop.wrong);
+  check('输入框预填当前译文', pop.val === '佩科拉很可爱', pop.val);
+
+  // 改成正确译文并保存
+  await js(`(async () => {
+    const inp = document.querySelector('#fix-right');
+    inp.value = '佩克拉很可爱';
+    document.querySelector('#fix-as-term').checked = true;
+    document.querySelector('#fix-save').click();
+    await new Promise(r => setTimeout(r, 400));
+  })()`);
+  await sleep(400);
+  const afterSave = await js(`(() => {
+    const r = document.querySelectorAll('#subs .line');
+    const last = r[r.length - 1];
+    return {
+      zh: last.querySelector('.zh').textContent,
+      note: document.querySelector('#fix-note').textContent
+    };
+  })()`);
+  check('界面立刻显示改后的译文', afterSave.zh === '佩克拉很可爱', afterSave.zh);
+  check('给出已记住的反馈', /已记住/.test(afterSave.note || ''), String(afterSave.note));
+
+  const sent = await js(`window.__uiTest.corrections()`);
+  check('修正已发给后端', Array.isArray(sent) && sent.length >= 1, JSON.stringify(sent));
+  if (Array.isArray(sent) && sent.length) {
+    const c = sent[sent.length - 1];
+    check('修正内容正确', c.ja === 'ぺこらはかわいい' && c.right === '佩克拉很可爱',
+      JSON.stringify(c));
+    check('勾了「专有名词」会标记为 term', c.asTerm === true, String(c.asTerm));
+  }
+
+  // 空内容不提交。
+  // 这里刻意在「保存成功」之后立刻操作 —— 正好验证产品侧的一个健壮性问题：
+  // 保存后 0.9 秒的自动关闭定时器不能把下一次操作吃掉。
+  const diag = await js(`(async () => {
+    const r = document.querySelectorAll('#subs .line');
+    const last = r[r.length - 1];
+    const b = last.querySelector('.fix-btn');
+    const before = document.querySelector('#fix-pop').classList.contains('hidden');
+    if (b) b.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await new Promise(r => setTimeout(r, 300));
+    const pop = document.querySelector('#fix-pop');
+    return {
+      hasBtn: !!b,
+      alreadyOpen: before === false,
+      openNow: !pop.classList.contains('hidden'),
+      ja: document.querySelector('#fix-ja').textContent
+    };
+  })()`);
+  check('保存后立刻再点 ✏ 仍能打开（旧关闭定时器被作废）',
+    diag.openNow === true, JSON.stringify(diag));
+  check('重开后显示的是当前这条', diag.ja === 'ぺこらはかわいい', String(diag.ja));
+
+  const empty = await js(`(async () => {
+    document.querySelector('#fix-right').value = '';
+    document.querySelector('#fix-save').dispatchEvent(
+      new MouseEvent('click', { bubbles: true }));
+    await new Promise(r => setTimeout(r, 300));
+    return {
+      note: document.querySelector('#fix-note').textContent,
+      hidden: document.querySelector('#fix-pop').classList.contains('hidden')
+    };
+  })()`);
+  check('空译文不提交并提示', /请填写/.test(empty.note || ''),
+    `note=${JSON.stringify(empty.note)}`);
+  check('空译文时弹层不关闭', empty.hidden === false, String(empty.hidden));
+
+  // 取消
+  await js(`document.querySelector('#fix-cancel').dispatchEvent(
+    new MouseEvent('click', { bubbles: true }))`);
+  await sleep(200);
+  const closed = await js(
+    `document.querySelector('#fix-pop').classList.contains('hidden')`);
+  check('取消后弹层关闭', closed === true);
+
+  // 统计事件
+  await emit({ kind: 'learn_stats', stats: { total: 7, enabled: true, suggest_terms: 2,
+    suggestions: [{ ja: 'ぺこら', right: '佩克拉' }, { ja: 'みこ', right: '小巫女' }] } });
+  await sleep(200);
+  const learnNote = await js(`document.querySelector('#learn-note').textContent`);
+  check('设置里显示已记住条数', /7 条/.test(learnNote || ''), String(learnNote));
+  check('提示术语表建议', /2 条建议/.test(learnNote || ''), String(learnNote));
+
   // ---------- 多行滚动 + 历史回看 ----------
   console.log('\n[多行滚动与历史回看]');
   // 连发 12 句：DOM 里应保留全部（historyLines=300），但窗口只能显示约 3 行
