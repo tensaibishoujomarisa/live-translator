@@ -360,7 +360,20 @@ function startBackend() {
   delete env.http_proxy; delete env.https_proxy; delete env.all_proxy;
   // ELECTRON_RUN_AS_NODE 若被置上，会传染给子进程里的 Node 行为，一并清掉
   delete env.ELECTRON_RUN_AS_NODE;
-  env.HF_HOME = env.HF_HOME || path.join(PROJECT_ROOT, 'models');
+
+  // 关键：模型缓存必须指向**包内**的 models/。
+  // 启动脚本里虽然设了 HF_HOME，但后端是 Electron 自己 spawn 的，那些变量不会传进来，
+  // 于是 faster-whisper 找不到已下载的模型，跑去 HuggingFace 联网解析 ——
+  // 实测让启动从 1.5 秒变成 61.5 秒，而且"离线版"其实在偷偷联网。
+  const modelsDir = path.join(PROJECT_ROOT, 'models');
+  env.HF_HOME = env.HF_HOME || modelsDir;
+  env.HUGGINGFACE_HUB_CACHE = env.HUGGINGFACE_HUB_CACHE || modelsDir;
+  // 模型已经在包里了就别再联网检查更新（没有模型的场景仍允许下载）
+  try {
+    const hasLocal = fs.existsSync(modelsDir) &&
+      fs.readdirSync(modelsDir).some((n) => n.startsWith('models--'));
+    if (hasLocal) env.HF_HUB_OFFLINE = '1';
+  } catch (_) {}
 
   child = spawn(py, buildArgs(), {
     cwd: PROJECT_ROOT,

@@ -122,9 +122,57 @@ def find_base_python(env_dir: Path) -> Path | None:
     return None
 
 
+def bundle_asr_model(name: str, models_dst: Path) -> bool:
+    """把指定的 faster-whisper 模型下载/复制进发行版的 models/。
+
+    faster-whisper 的模型缓存目录名是 models--<org>--<repo>，不同模型的
+    org 不一样，所以直接从已知的几个里挑：本地已有的先找，没有再下载。
+    """
+    # 1) 开发机已经下过的，直接拷
+    for d in (ROOT / "models").glob(f"models--*--*{name}*"):
+        if d.is_dir():
+            dst = models_dst / d.name
+            if not dst.exists():
+                copy_tree(d, dst)
+            log(f"        从本地缓存复制 {d.name}（{mb(dst):,.0f} MB）")
+            return True
+    # 2) 下载
+    log(f"        本地没有 {name}，下载中…")
+    try:
+        from faster_whisper import WhisperModel
+
+        m = WhisperModel(name, device="cpu", compute_type="int8",
+                         download_root=str(ROOT / "models"))
+        import numpy as np
+
+        list(m.transcribe(np.zeros(8000, dtype=np.float32), language="ja", beam_size=1)[0])
+        del m
+    except Exception as exc:
+        log(f"        下载失败：{type(exc).__name__}: {exc}")
+        return False
+
+    for d in (ROOT / "models").glob(f"models--*--*{name}*"):
+        if d.is_dir():
+            dst = models_dst / d.name
+            if not dst.exists():
+                copy_tree(d, dst)
+            log(f"        已放入 {d.name}（{mb(dst):,.0f} MB）")
+            return True
+    log(f"        下载后仍找不到缓存目录（缓存位置：{ROOT / 'models'}）")
+    return False
+
+
 def launcher_bat(target_dir: Path, bat_name: str, py_rel: str, args: str, title: str,
-                 note: str = "") -> Path:
-    """生成一个纯 ASCII 的启动 bat（中文会让 cmd 解析错位，必须 ASCII）。"""
+                 tail: str = "") -> Path:
+    """生成一个纯 ASCII 的启动 bat（中文会让 cmd 解析错位，必须 ASCII）。
+
+    tail 为空时，脚本末尾执行 `"%PY%" {args}`；
+    tail 非空时，用 tail 完全替代末尾那段（用于 Electron 这种不走 python 的入口）。
+    两者互斥，避免出现「命令被写在 exit /b 之后成为死代码」这种坑。
+    """
+    if tail and args:
+        raise ValueError("tail 与 args 不能同时给：tail 会完全接管脚本末尾")
+    ending = tail if tail else f'"%PY%" {args}'
     content = f"""@echo off
 chcp 65001 >nul
 cd /d "%~dp0"
@@ -147,8 +195,7 @@ set "PYTHONIOENCODING=utf-8"
 set "PYTHONDONTWRITEBYTECODE=1"
 rem Some launchers set this; it makes Electron run as plain Node and everything breaks
 set "ELECTRON_RUN_AS_NODE="
-{note}
-"%PY%" {args}
+{ending}
 """
     p = target_dir / bat_name
     # 必须是 ASCII + 不带 BOM：
@@ -177,6 +224,11 @@ def main() -> int:
     ap.add_argument("--no-zip", action="store_true", help="只生成目录，不压缩")
     ap.add_argument("--slim", action="store_true",
                     help="排除 nvidia-* CUDA 运行库（识别只能用 CPU，但小约 700MB）")
+    ap.add_argument("--bundle-asr", default="",
+                    help="把指定识别模型打进去（如 small / large-v3-turbo）；"
+                         "不填则不打（用户首次启动按 config 自动下载）")
+    ap.add_argument("--asr-model-default", default="",
+                    help="同时把 config.yaml 的 asr.model 改成这个值")
     ap.add_argument("--source", default=str(BUILD / "env"), help="依赖环境目录")
     args = ap.parse_args()
 
@@ -335,12 +387,26 @@ def main() -> int:
     )
     log(f"      Python 运行时 {mb(py_dir):,.0f} MB")
 
-    # ---------- 3. 模型 ----------
+    # 3) 模型 ----------
     log(f"\n[3/6] 组装模型")
     models_dst = out / "models"
+    # 这个目录必须是干净的：测试过程中可能有别的进程往 models/ 里下过东西
+    # （实测混进过 2.1GB 的 large-v3-turbo，zip 直接涨到 3GB）
+    if models_dst.exists():
+        shutil.rmtree(models_dst, ignore_errors=True)
     models_dst.mkdir(parents=True, exist_ok=True)
+
+    # HuggingFace 缓存的杂项，不该进包
+    MODELS_JUNK = {".locks", "xet", "torch", ".agent_harnesses.json", "CACHEDIR.TAG"}
+
+    def _skip_models(rel: Path, dirs: list[str]) -> bool:
+        for d in list(dirs):
+            if d in MODELS_JUNK:
+                dirs.remove(d)
+        return False
+
     if (local_mt / "config.json").exists():
-        copy_tree(local_mt, models_dst / local_mt.name)
+        copy_tree(local_mt, models_dst / local_mt.name, ignore=_skip_models)
         log(f"      本地翻译模型 {mb(models_dst / local_mt.name):,.0f} MB")
 
     # 把 silero VAD 的 onnx 也放到 models/ 下。
@@ -357,10 +423,32 @@ def main() -> int:
         log(f"      [warn] 没能拷 VAD 模型：{exc}")
 
     if args.with_whisper:
-        copy_tree(whisper_dir, models_dst / whisper_dir.name)
+        copy_tree(whisper_dir, models_dst / whisper_dir.name, ignore=_skip_models)
         log(f"      Whisper 识别模型 {mb(models_dst / whisper_dir.name):,.0f} MB")
+    elif args.bundle_asr:
+        log(f"      打包识别模型：{args.bundle_asr}")
+        if not bundle_asr_model(args.bundle_asr, models_dst):
+            log(f"      [FAIL] 没能把 {args.bundle_asr} 放进包里")
+            return 2
     else:
-        log(f"      跳过 Whisper 模型（首次启动会自动下载）")
+        log(f"      跳过 Whisper 模型（首次启动会按 config 里的 asr.model 自动下载）")
+
+    # 改了打包的模型，就把 config.yaml 的默认也改掉，
+    # 否则会出现「包里带了 small，但配置让它去下 turbo」这种拧巴情况
+    if args.asr_model_default:
+        cfg_path = out / "config.yaml"
+        try:
+            text = cfg_path.read_text(encoding="utf-8")
+            import re as _re
+
+            new_text, n_sub = _re.subn(r"(?m)^(\s*model:\s*)\S+(\s*#.*)?$",
+                                       lambda m: m.group(1) + args.asr_model_default,
+                                       text, count=1)
+            if n_sub:
+                cfg_path.write_text(new_text, encoding="utf-8")
+                log(f"      config.yaml 的 asr.model 已改为 {args.asr_model_default}")
+        except Exception as exc:
+            log(f"      [warn] 改 config.yaml 失败：{exc}")
 
     # ---------- 4. Electron ----------
     if not args.no_electron:
@@ -396,6 +484,10 @@ def main() -> int:
     py_rel = "runtime\\python\\python.exe"
     # 注意：这些脚本的**内容**必须是纯 ASCII（中文会让 cmd 解析错位），
     # 所以这里不写中文标题；中文只出现在给用户看的 使用说明.txt 里。
+    #
+    # 另外 launcher_bat 会把 `"%PY%" {args}` 追加在脚本末尾，
+    # 所以传给 _start.bat 的 args 必须是**能在不开窗口的情况下快速结束**的东西，
+    # 而且不能用 start（会异步返回、errorlevel 不可靠）。
     launcher_bat(out, "_selfcheck.bat", py_rel, "-m backend.main --doctor",
                  "JP Live Translator - Self Check")
     launcher_bat(out, "_console.bat", py_rel, "-m backend.main --pretty",
@@ -406,12 +498,13 @@ def main() -> int:
         #   * 它会清掉 ELECTRON_RUN_AS_NODE，也能把设置面板里的参数当命令行传下去
         # 所以这里只负责把 Electron 启动起来。
         launcher_bat(
-            out, "_start.bat", py_rel,
-            "-c \"import faster_whisper\"",
+            out, "_start.bat", py_rel, "",
             "JP Live Translator",
-            note=(
-                'rem Sanity-check the bundled Python first, so failures show up here\n'
-                'rem instead of halfway through opening a window.\n'
+            tail=(
+                'rem Sanity-check the bundled Python FIRST, so a broken runtime shows up\n'
+                'rem here instead of halfway through opening a window.\n'
+                'rem This must come before any "exit /b", otherwise it is dead code.\n'
+                '"%PY%" -c "import faster_whisper, sounddevice" >nul 2>nul\n'
                 'if errorlevel 1 (\n'
                 '  echo [ERROR] Bundled Python is broken. Re-extract the archive.\n'
                 '  pause\n'
@@ -423,8 +516,6 @@ def main() -> int:
                 '  pause\n'
                 '  exit /b 1\n'
                 ')\n'
-                'rem The backend is spawned by Electron itself: it knows the bundled\n'
-                'rem python path and also clears ELECTRON_RUN_AS_NODE.\n'
                 'start "" "%ELECTRON%" "%~dp0runtime\\ui"\n'
                 'exit /b 0'
             ),

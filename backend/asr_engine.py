@@ -82,6 +82,19 @@ class AsrEngine:
     ):
         self.model_name = model
         self.device = device or "auto"
+        # "auto"：有可用 CUDA 就用 GPU，否则 CPU（发行版默认走这条路）
+        if str(self.device).lower() in ("auto", ""):
+            self.device = "cuda"
+            try:
+                from .cuda_setup import prepare_cuda_dlls, preload_torch
+
+                preload_torch()
+                rep = prepare_cuda_dlls()
+                if not rep.get("ok"):
+                    log.info("auto: 没有可用的 CUDA 运行库，选 CPU")
+                    self.device = "cpu"
+            except Exception:
+                self.device = "cpu"
         self.compute_type = compute_type or (cpu_compute_type if self.device == "cpu" else "float16")
         self.beam_size_final = beam_size_final
         self.no_speech_threshold = no_speech_threshold
@@ -113,12 +126,17 @@ class AsrEngine:
 
                     preload_torch()
                     rep = prepare_cuda_dlls(verbose=True)
-                    if not rep.get("ok") and rep.get("missing"):
-                        log.warning(
-                            "CUDA 运行库不完整（缺 %s），可能回退 CPU。"
-                            "可在虚拟环境里执行： pip install nvidia-cublas-cu12 nvidia-cudnn-cu12",
-                            ", ".join(rep["missing"][:3]),
+                    if not rep.get("ok"):
+                        # 明知道不可用就别先加载 GPU 模型了（白等几秒再回退）
+                        missing = ", ".join(rep.get("missing", [])[:3]) or "未知"
+                        log.warning("CUDA 运行库不可用（缺 %s），直接使用 CPU", missing)
+                        self._on_status(
+                            "没检测到可用的 CUDA 运行库，用 CPU 识别（会慢一些）。"
+                            "想用显卡：装 nvidia-cublas-cu12 nvidia-cudnn-cu12，"
+                            "或用带 GPU 支持的发行版。"
                         )
+                        self.device = "cpu"
+                        self.compute_type = "int8"
                 except Exception as exc:
                     log.debug("CUDA 准备失败: %s", exc)
 
@@ -156,6 +174,57 @@ class AsrEngine:
             self._load_s = time.time() - t0
             log.info("模型就绪，用时 %.1fs", self._load_s)
             self._on_status(f"识别模型就绪（{self._load_s:.1f}s）")
+
+            # 关键：模型能加载 ≠ 能推理。
+            # 缺 CUDA 运行库时 WhisperModel() 构造会成功，直到第一次 encode()
+            # 才抛 "Library cublas64_12.dll is not found"。
+            # 如果不在这里试跑一次，用户拿到包后第一句话就崩，
+            # 而且是在音频线程里崩，表现是「完全没字幕」。
+            self._probe_gpu()
+
+    def _probe_gpu(self) -> None:
+        """用一小段静音试推理，确认当前 device 真的可用；不行就回退 CPU。"""
+        if self.device == "cpu" or self._model is None:
+            return
+        import numpy as np
+
+        try:
+            list(self._model.transcribe(
+                np.zeros(3200, dtype=np.float32),  # 0.2s
+                language="ja", beam_size=1, vad_filter=False,
+                condition_on_previous_text=False, without_timestamps=True,
+            ))
+            log.info("GPU 试推理通过（device=%s/%s）", self.device, self.compute_type)
+            return
+        except Exception as exc:
+            msg = str(exc).lower()
+            gpu_problem = any(k in msg for k in
+                              ("cublas", "cudnn", "cuda", "not found or cannot be loaded",
+                               "no kernel image", "out of memory"))
+            if not gpu_problem:
+                log.debug("试推理失败（看起来不是 GPU 问题）：%s", exc)
+                return
+            log.warning("GPU 试推理失败(%s)，回退 CPU/int8", exc)
+
+        # 回退 CPU
+        try:
+            from faster_whisper import WhisperModel
+
+            self.device = "cpu"
+            self.compute_type = "int8"
+            self._model = WhisperModel(
+                self.model_name, device="cpu", compute_type="int8",
+                download_root=self.models_root,
+            )
+            self._on_status(
+                "GPU 不可用（缺 CUDA 运行库），已自动切到 CPU 识别。"
+                "想用显卡：装 nvidia-cublas-cu12 nvidia-cudnn-cu12，"
+                "或用带 GPU 支持的发行版。"
+            )
+            log.warning("已回退到 CPU/int8 识别")
+        except Exception as exc:
+            log.error("回退 CPU 也失败：%s", exc)
+            self._on_status(f"识别引擎不可用：{exc}")
 
     @property
     def load_seconds(self) -> float:

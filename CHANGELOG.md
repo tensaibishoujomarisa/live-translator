@@ -2,6 +2,55 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.1.2] - 2026-10-12
+
+### 新增
+
+- **便携发行版**：解压双击 `_start.bat` 即可用，不需要装 Python、不需要联网下载模型。
+  CPU 版约 1.2GB（zip），自带识别模型（`small`）、本地翻译模型、VAD 模型。
+- `scripts/build_env.py`：建干净自包含的依赖环境（用 **CPU 版 torch** 502MB
+  替代 CUDA 版 4.2GB —— 本地翻译本来就跑 CPU）
+- `scripts/build_release.py`：组装发行版，支持 `--slim` / `--bundle-asr` / `--with-whisper`
+- `scripts/verify_bundle.py`：用发行版自带的 Python 验证识别/翻译/VAD/音频真的能用
+- `scripts/bench_cpu_asr.py`：CPU 识别基准测试，用来选发行版该带哪个模型
+- `scripts/test_bundle_env.py`：验证依赖环境（不只 import 成功，而是真跑一句翻译）
+- 设置里可配「可见行数」「回看行数」；`asr.device` 支持 `auto`
+
+### 修复
+
+- **`asr.device` 为 cuda 但缺 CUDA 运行库时，模型能加载却在第一次推理时崩**
+  （`Library cublas64_12.dll is not found`），表现为完全没有字幕。
+  现在：加载前先探测 CUDA 可用性（不可用直接选 CPU），
+  加载后还会用一小段静音试推理兜底，确保不把故障留到音频线程里。
+- **Electron 没把 `HF_HOME` 传给后端子进程**，导致「离线版」仍去 HuggingFace 解析模型，
+  启动从 1.5 秒变成 61.5 秒。现在 Electron 自己设置模型缓存路径，
+  且模型已在包内时设 `HF_HUB_OFFLINE=1`。
+- **`Config` 里的路径是绝对路径**，打包后 config.yaml 带着打包机的路径，
+  换台机器就找不到模型。新增 `Config.get_path()`，相对路径按项目根解析
+  （顺带修好了「从别的目录启动找不到模型」）。
+- **`create_vad(models_dir="...")` 传字符串会抛 TypeError**（`str / str`），
+  被内部 except 吞掉后**静默降级成 energy VAD**，断句明显变碎却不报错。
+- **`silero-vad` 从未进 requirements.txt**（开发环境偶然装了），
+  干净环境下 VAD 必然降级。现在列为运行期依赖，降级时用 ERROR + 界面提示。
+- 便携版运行时组装：只拷 `python.exe` + site-packages 会报 `No pyvenv.cfg file`；
+  `python._pth` 存在时 `DLLs` 不再自动加入搜索路径，导致 `_socket`/`_ctypes` 全部 import 失败。
+  现在拷完整基础解释器目录，并把 `DLLs` 显式写进 `._pth`。
+- 生成的 `_start.bat` 里 Python 健全性检查被放在 `exit /b 0` 之后，成了死代码。
+
+### 实测数据
+
+CPU 识别基准（i5-13600KF，20 线程，int8）：
+
+| 模型 | 实时率 | 结论 |
+|---|---|---|
+| `base` | x0.102 | 可实时，但日语错误较多 |
+| `small` | **x0.311** | **发行版默认**（能实时且识别基本正确） |
+| `medium` | x0.878 | 勉强，连续讲话会积压 |
+| `large-v3-turbo` | x1.237 | **比说话还慢，CPU 上不可用** |
+
+GPU（RTX 4070 Ti）上 `large-v3-turbo` 是 x0.05，比 CPU 快约 25 倍 ——
+有显卡就用显卡版 / `device: auto`。
+
 ## [0.1.1] - 2026-10-12
 
 ### 新增

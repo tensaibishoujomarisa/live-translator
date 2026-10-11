@@ -26,7 +26,9 @@ asr:
   # tiny | base | small | medium | large-v3 | large-v3-turbo | distil-large-v3
   # 4070Ti 上 large-v3-turbo 是质量/速度的最佳平衡
   model: large-v3-turbo
-  device: cuda          # cuda | cpu
+  # auto = 有可用 CUDA 就用 GPU，否则自动用 CPU（推荐，换了机器也不用改）
+  # 想强制指定：cuda（缺 CUDA 运行库时会自动回退 CPU）或 cpu
+  device: auto
   compute_type: float16 # 显存不足改 int8_float16；CPU 用 int8
   # 最终结果用 beam search，值越大越准越慢（3 足够）
   beam_size_final: 3

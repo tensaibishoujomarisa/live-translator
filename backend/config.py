@@ -52,7 +52,8 @@ DEFAULTS: dict[str, Any] = {
     "asr": {
         # tiny|base|small|medium|large-v3|large-v3-turbo|distil-large-v3
         "model": "large-v3-turbo",
-        "device": "cuda",
+        # auto = 有可用 CUDA 就用 GPU，否则 CPU（便携发行版默认）
+        "device": "auto",
         "compute_type": "float16",
         "cpu_compute_type": "int8",
         "beam_size_final": 3,
