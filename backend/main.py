@@ -205,8 +205,8 @@ def cmd_doctor(cfg: Config, as_json: bool = False) -> int:
                 print("  api_key  = 未配置（只显示日文）")
                 print("             设置： setx JP_LIVE_TRANSLATOR_API_KEY \"sk-...\"")
     else:
-        md = Path(str(cfg.get("translate", "local", "model_dir", default="")))
-        has = (md / "model.bin").exists()
+        md = cfg.get_path("translate", "local", "model_dir")
+        has = (md / "model.bin").exists() or (md / "config.json").exists()
         report["translate"]["local_model"] = str(md)
         report["translate"]["local_model_ok"] = has
         if not as_json:
@@ -497,7 +497,8 @@ def main(argv: list[str] | None = None) -> int:
         setup_logging(str(cfg.get("log", "level", default="info")), None)
         return cmd_test_asr(args.test_asr, cfg)
 
-    setup_logging(str(cfg.get("log", "level", default="info")), cfg.get("log", "file", default=None))
+    setup_logging(str(cfg.get("log", "level", default="info")),
+                  str(cfg.get_path("log", "file")) if cfg.get("log", "file") else None)
 
     from backend.pipeline import Pipeline  # type: ignore
 

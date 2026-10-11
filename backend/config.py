@@ -112,8 +112,10 @@ DEFAULTS: dict[str, Any] = {
         # 本地 NMT：transformers(推荐) | ct2(需自己提供 CT2 模型)
         "local": {
             "backend": "transformers",
-            # 目录里要有 config.json + 权重 + source.spm/target.spm
-            "model_dir": str(ROOT / "models" / "hf-shun89__opus-mt-ja-zh"),
+            # 相对路径按项目根目录解析（见 Config.get_path）。
+            # 用相对路径而不是绝对路径，否则打包发行版后 config.yaml 里会带着
+            # 打包机的绝对路径，到了别人机器上直接失效。
+            "model_dir": "models/hf-shun89__opus-mt-ja-zh",
             "tokenizer_dir": "",
             "device": "cpu",
             "compute_type": "int8",
@@ -126,7 +128,8 @@ DEFAULTS: dict[str, Any] = {
     },
     "glossary": {
         "enabled": True,
-        "path": str(ROOT / "glossary.yaml"),
+        # 相对路径按项目根解析
+        "path": "glossary.yaml",
         "max_entries_in_prompt": 80,
     },
     "subtitle": {
@@ -151,7 +154,7 @@ DEFAULTS: dict[str, Any] = {
     },
     "log": {
         "level": "info",
-        "file": str(ROOT / "logs" / "jp-live-translator.log"),
+        "file": "logs/jp-live-translator.log",
     },
 }
 
@@ -243,6 +246,20 @@ class Config:
                 return default
             node = node[key]
         return node
+
+    def get_path(self, *path: str, default: Any = None) -> Path:
+        """取一个路径类配置，相对路径按**项目根目录**解析。
+
+        这样 config.yaml 里可以写 `models/xxx`，无论从哪个工作目录启动都能找到；
+        打包发行版时也不会把打包机的绝对路径带进去。
+        """
+        v = self.get(*path, default=None)
+        if v is None or v == "":
+            if default is None:
+                return ROOT
+            v = default
+        p = Path(str(v))
+        return p if p.is_absolute() else (ROOT / p)
 
     def with_overrides(self, overrides: dict) -> "Config":
         return Config(data=_deep_merge(self.data, overrides or {}))

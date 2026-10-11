@@ -579,7 +579,7 @@ def create_translator(cfg, logger_status: Callable[[str], None] | None = None) -
     status = logger_status or (lambda _m: None)
     provider = str(cfg.get("translate", "provider", default="llm")).lower()
     glossary = Glossary.load(
-        cfg.get("glossary", "path", default=""),
+        str(cfg.get_path("glossary", "path")),
         enabled=bool(cfg.get("glossary", "enabled", default=True)),
     )
 
@@ -589,7 +589,8 @@ def create_translator(cfg, logger_status: Callable[[str], None] | None = None) -
 
     if provider == "local":
         backend = str(cfg.get("translate", "local", "backend", default="transformers")).lower()
-        model_dir = str(cfg.get("translate", "local", "model_dir", default=""))
+        # 相对路径按项目根解析，保证换工作目录 / 打包发行版后都能找到
+        model_dir = str(cfg.get_path("translate", "local", "model_dir"))
         if backend in ("ct2", "ctranslate2"):
             return LocalTranslator(
                 model_dir=model_dir,

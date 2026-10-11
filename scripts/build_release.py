@@ -95,6 +95,33 @@ def copy_tree(src: Path, dst: Path, ignore=None, exts_to_skip=None) -> int:
     return n
 
 
+def find_base_python(env_dir: Path) -> Path | None:
+    """从 venv 的 pyvenv.cfg 里找出基础解释器目录（标准库在那儿）。"""
+    cfg = env_dir / "pyvenv.cfg"
+    cands: list[Path] = []
+    if cfg.exists():
+        try:
+            for line in cfg.read_text(encoding="utf-8", errors="ignore").splitlines():
+                if "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                if k.strip().lower() in ("home", "base-executable", "executable"):
+                    p = Path(v.strip().strip('"'))
+                    cands.append(p if p.is_dir() else p.parent)
+        except Exception:
+            pass
+    # 兜底：常见安装位置
+    if os.name == "nt":
+        local = os.environ.get("LOCALAPPDATA", "")
+        for v in ("Python313", "Python312", "Python311", "Python310"):
+            cands.append(Path(local) / "Programs" / "Python" / v)
+
+    for c in cands:
+        if (c / "Lib" / "os.py").exists() and (c / "python.exe").exists():
+            return c
+    return None
+
+
 def launcher_bat(target_dir: Path, bat_name: str, py_rel: str, args: str, title: str,
                  note: str = "") -> Path:
     """生成一个纯 ASCII 的启动 bat（中文会让 cmd 解析错位，必须 ASCII）。"""
@@ -124,8 +151,20 @@ set "ELECTRON_RUN_AS_NODE="
 "%PY%" {args}
 """
     p = target_dir / bat_name
-    # 必须是 ASCII + 不带 BOM（UTF-8 BOM 会让 @echo off 解析失败）
-    p.write_bytes(content.replace("\n", "\r\n").encode("ascii"))
+    # 必须是 ASCII + 不带 BOM：
+    #   * 中文在 chcp 65001 生效前会按系统代码页解析，导致行错位
+    #   * UTF-8 BOM 会让 cmd 把 @echo off 解析成 ∩╗┐@echo off
+    text = content.replace("\n", "\r\n")
+    try:
+        data = text.encode("ascii")
+    except UnicodeEncodeError as exc:
+        bad_line = text[:exc.start].count("\n") + 1
+        snippet = text.splitlines()[bad_line - 1] if bad_line - 1 < len(text.splitlines()) else "?"
+        raise RuntimeError(
+            f"生成的 {bat_name} 含非 ASCII 字符（第 {bad_line} 行）：{snippet!r}\n"
+            f"  批处理文件内容必须是纯 ASCII，中文只能出现在文件名里。"
+        ) from exc
+    p.write_bytes(data)
     return p
 
 
@@ -136,6 +175,8 @@ def main() -> int:
                     help="把 Whisper 模型也打进去（完全离线，+约1.5GB）")
     ap.add_argument("--no-electron", action="store_true", help="不打包 Electron 界面（只出后端）")
     ap.add_argument("--no-zip", action="store_true", help="只生成目录，不压缩")
+    ap.add_argument("--slim", action="store_true",
+                    help="排除 nvidia-* CUDA 运行库（识别只能用 CPU，但小约 700MB）")
     ap.add_argument("--source", default=str(BUILD / "env"), help="依赖环境目录")
     args = ap.parse_args()
 
@@ -210,23 +251,48 @@ def main() -> int:
     py_dir = rt / "python"
     py_dir.mkdir(parents=True, exist_ok=True)
 
-    # 拷解释器本体（Scripts 里的 exe 没用，改为直接 python.exe -m）
     src_root = Path(args.source)
-    for item in ("python.exe", "pythonw.exe", "python3.dll", "python312.dll",
-                 "vcruntime140.dll", "vcruntime140_1.dll"):
-        s = src_root / "Scripts" / item
-        if not s.exists():
-            s = src_root / item
-        if s.exists():
-            shutil.copy2(s, py_dir / item)
 
-    # site-packages
+    # 关键：必须拷**基础解释器的完整目录**（含标准库 Lib、DLLs、python3xx.zip），
+    # 只拷 python.exe + site-packages 是不行的 ——
+    # 那个 exe 属于 venv，启动时会去找 pyvenv.cfg，并依赖标准库。
+    # 实测只拷 exe 会直接报 "No pyvenv.cfg file"，包在用户机器上根本起不来。
+    base_py = find_base_python(src_root)
+    if not base_py:
+        log("      [FAIL] 找不到基础解释器目录（venv 的 pyvenv.cfg 里应有 home = ...）")
+        return 2
+    log(f"      基础解释器：{base_py}")
+
+    def _skip_base(rel: Path, dirs: list[str]) -> bool:
+        """基础解释器里不需要的东西。
+
+        注意 **DLLs 千万不能跳过** —— C 扩展模块都在那里
+        （_socket / _ctypes / _ssl / select / unicodedata …），
+        少了它连 `import socket` 都会失败。实测踩过。
+        """
+        drop = {"site-packages", "test", "tests", "idlelib", "tkinter", "turtledemo",
+                "__pycache__", "Scripts", "Doc", "Tools", "include", "libs"}
+        for d in list(dirs):
+            if d in drop:
+                dirs.remove(d)
+        return False
+
+    t0 = time.time()
+    n_base = copy_tree(base_py, py_dir, ignore=_skip_base)
+    log(f"      标准库 {n_base} 个文件（{time.time() - t0:.0f}s）")
+
+    # 用 venv 里的 site-packages 覆盖（含 torch/faster-whisper 等）
     log(f"      拷贝 site-packages（这一步最慢）")
     sp_dst = py_dir / "Lib" / "site-packages"
     t0 = time.time()
     copied = 0
+    skipped = []
     for item in env_site.iterdir():
         if item.name in SITE_EXCLUDE:
+            continue
+        # --slim：不带 CUDA 运行库（识别只能用 CPU，但小 700MB）
+        if args.slim and item.name.startswith("nvidia"):
+            skipped.append(item.name)
             continue
         if item.is_dir():
             copied += copy_tree(item, sp_dst / item.name)
@@ -237,14 +303,33 @@ def main() -> int:
             except Exception:
                 pass
     log(f"      {copied} 个文件（{time.time() - t0:.0f}s）")
+    if skipped:
+        log(f"      已跳过：{', '.join(skipped)}（--slim）")
+    elif not args.slim and not any(p.name.startswith("nvidia") for p in env_site.iterdir()):
+        log(f"      [note] 环境里没有 nvidia-* CUDA 运行库，识别将只能用 CPU")
+        log(f"             要带 GPU 支持： build_env 加 --cuda 后重新打包")
 
-    # _pth：让嵌入式解释器找到 Lib/site-packages 与项目根
+    # 清掉可能从 venv 带过来的 pyvenv.cfg：
+    # 有它的话解释器会以 venv 模式启动，去解析里面的绝对路径
+    for stray in (py_dir / "pyvenv.cfg", py_dir / "Scripts" / "pyvenv.cfg"):
+        try:
+            stray.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    # _pth：让解释器以「独立」模式找库，并让 backend/scripts 可被 import。
+    #
+    # 关键：**DLLs 必须显式写进来**。一旦存在 ._pth 文件，解释器进入 isolated 模式，
+    # 就不会再自动把 DLLs 加入搜索路径，于是 _socket / _ctypes / _ssl / select
+    # 这些 C 扩展全都 import 失败（报 No module named '_socket'）。实测踩过两次。
+    # 另外 import site 必须放最后一行，否则上面的路径会被 site 处理覆盖。
     (py_dir / "python._pth").write_text(
         "python312.zip\r\n"
-        ".\r\n"
+        "DLLs\r\n"
         "Lib\r\n"
         "Lib\\site-packages\r\n"
-        "..\\..\r\n"          # 让 backend / scripts 可被 import
+        ".\r\n"
+        "..\\..\r\n"          # 发行版根目录，让 backend / scripts 可被 import
         "import site\r\n",
         encoding="ascii",
     )
@@ -257,6 +342,20 @@ def main() -> int:
     if (local_mt / "config.json").exists():
         copy_tree(local_mt, models_dst / local_mt.name)
         log(f"      本地翻译模型 {mb(models_dst / local_mt.name):,.0f} MB")
+
+    # 把 silero VAD 的 onnx 也放到 models/ 下。
+    # 平时 vad.py 会去 silero_vad 包里找，但显式放一份更稳：
+    # 用户误删包、或换了查找逻辑时都不会静默退化成 energy。
+    try:
+        import silero_vad  # type: ignore
+
+        vad_src = Path(silero_vad.__file__).parent / "data" / "silero_vad.onnx"
+        if vad_src.exists():
+            shutil.copy2(vad_src, models_dst / "silero_vad.onnx")
+            log(f"      VAD 模型 silero_vad.onnx ({vad_src.stat().st_size / 1024:.0f} KB)")
+    except Exception as exc:
+        log(f"      [warn] 没能拷 VAD 模型：{exc}")
+
     if args.with_whisper:
         copy_tree(whisper_dir, models_dst / whisper_dir.name)
         log(f"      Whisper 识别模型 {mb(models_dst / whisper_dir.name):,.0f} MB")
@@ -295,9 +394,11 @@ def main() -> int:
     # ---------- 5. 启动脚本 ----------
     log(f"\n[5/6] 生成启动脚本")
     py_rel = "runtime\\python\\python.exe"
-    launcher_bat(out, "_selfcheck.bat", py_rel, '-m backend.main --doctor',
+    # 注意：这些脚本的**内容**必须是纯 ASCII（中文会让 cmd 解析错位），
+    # 所以这里不写中文标题；中文只出现在给用户看的 使用说明.txt 里。
+    launcher_bat(out, "_selfcheck.bat", py_rel, "-m backend.main --doctor",
                  "JP Live Translator - Self Check")
-    launcher_bat(out, "_console.bat", py_rel, '-m backend.main --pretty',
+    launcher_bat(out, "_console.bat", py_rel, "-m backend.main --pretty",
                  "JP Live Translator - Console")
     if not args.no_electron:
         # Electron 入口。注意后端是由 Electron 自己拉起来的：
@@ -309,7 +410,8 @@ def main() -> int:
             "-c \"import faster_whisper\"",
             "JP Live Translator",
             note=(
-                'rem 先确认自带的 Python 依赖完好（有问题就早点报出来，别等窗口开一半）\n'
+                'rem Sanity-check the bundled Python first, so failures show up here\n'
+                'rem instead of halfway through opening a window.\n'
                 'if errorlevel 1 (\n'
                 '  echo [ERROR] Bundled Python is broken. Re-extract the archive.\n'
                 '  pause\n'
@@ -321,6 +423,8 @@ def main() -> int:
                 '  pause\n'
                 '  exit /b 1\n'
                 ')\n'
+                'rem The backend is spawned by Electron itself: it knows the bundled\n'
+                'rem python path and also clears ELECTRON_RUN_AS_NODE.\n'
                 'start "" "%ELECTRON%" "%~dp0runtime\\ui"\n'
                 'exit /b 0'
             ),
@@ -358,9 +462,13 @@ def main() -> int:
     if not args.no_zip:
         log(f"\n压缩中（这一步比较久）…")
         t0 = time.time()
-        archive = DIST / name
-        shutil.make_archive(str(archive), "zip", root_dir=str(DIST), base_dir=name)
-        zpath = archive.with_suffix(".zip")
+        # 注意：不能用 Path.with_suffix('.zip') —— 它会把版本号里的 ".1" 当成后缀换掉，
+        # 得到 jp-live-translator-0.1.zip 这种错名字。直接拼字符串。
+        archive = shutil.make_archive(str(DIST / name), "zip",
+                                      root_dir=str(DIST), base_dir=name)
+        zpath = Path(archive)
+        if not zpath.exists():
+            zpath = DIST / (name + ".zip")
         log(f"  {zpath.name}  {zpath.stat().st_size / 1024 / 1024:,.0f} MB"
             f"（{time.time() - t0:.0f}s）")
     return 0
