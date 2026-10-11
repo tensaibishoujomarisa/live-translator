@@ -1,0 +1,31 @@
+name: 功能建议
+description: 想要新功能 / 想改现有行为
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: pain
+    attributes:
+      label: 你现在遇到的麻烦
+      description: 先说场景，再说方案。这样更容易判断该怎么实现。
+      placeholder: |
+        例：主播唱歌的时候，歌词被识别成一堆乱七八糟的字，把字幕刷没了
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: 你希望的解决方式
+    validations:
+      required: false
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: 涉及范围（如果知道的话）
+      options:
+        - label: 识别（ASR）
+        - label: 翻译
+        - label: 音频采集
+        - label: 字幕窗界面
+        - label: 配置 / 脚本
+        - label: 不确定

@@ -1,0 +1,37 @@
+# 日语直播实时翻译字幕 —— 运行期依赖
+#
+# 注意：这里列的是「运行时」必需的包。
+# 模型下载只在 scripts/setup_whisper.py / scripts/setup_local_mt.py 阶段进行（一次性），
+# 之后软件运行完全离线：识别本地推理，翻译要么走你自己的 API，要么走本地 NMT。
+
+# 语音识别（CTranslate2 后端，比 openai-whisper 快 4 倍以上）
+faster-whisper>=1.0.3
+
+# GPU 推理需要的 CUDA 12 运行库（CTranslate2 不会自动找到它们）
+# 约 700MB；只用 CPU 的话可以不装，配置里 asr.device 改 cpu
+nvidia-cublas-cu12
+nvidia-cudnn-cu12
+
+# 语音活动检测（VAD）：给了 ONNX 模型，断句质量明显更好
+# 可选；装了就不必依赖下面的 energy 兜底
+silero-vad>=5.1
+
+# 系统声音回环采集（Windows WASAPI loopback）
+sounddevice>=0.4.6
+# 备用采集实现：PyAudio 的 WASAPI 补丁版
+PyAudioWPatch>=0.2.12.6
+
+# VAD / 数值
+onnxruntime>=1.17
+numpy>=1.24
+scipy>=1.11
+
+# 翻译：LLM 调用
+requests>=2.31
+
+# 翻译：本地 NMT（可选，装了就支持 provider=local）
+ctranslate2>=4.3
+sentencepiece>=0.2.0
+
+# 配置与术语表
+PyYAML>=6.0

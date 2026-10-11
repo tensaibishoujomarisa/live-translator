@@ -1,0 +1,39 @@
+MIT License
+
+Copyright (c) 2026 jp-live-translator contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+--------------------------------------------------------------------------
+第三方组件声明 / Third-party notices
+
+本项目依赖以下第三方组件，它们各自遵循自己的许可证：
+
+  * faster-whisper (MIT)          —— Whisper 推理的 CTranslate2 实现
+  * CTranslate2 (MIT)             —— 高效 Transformer 推理引擎
+  * OpenAI Whisper 模型权重 (MIT)  —— 语音识别模型（运行时下载）
+  * Silero VAD (MIT)              —— 语音活动检测模型（运行时下载）
+  * OPUS-MT / MarianMT (CC-BY-4.0)—— 本地翻译模型（运行时下载）
+  * PortAudio (MIT)               —— 音频 I/O
+  * PyAudioWPatch (MIT)           —— WASAPI loopback 采集
+  * Electron (MIT)                —— 桌面外壳
+  * onnxruntime (MIT)             —— VAD 推理
+
+模型权重不随本仓库分发，由 scripts/ 下的脚本在使用者本机下载，
+使用时请一并遵守对应模型的许可条款。

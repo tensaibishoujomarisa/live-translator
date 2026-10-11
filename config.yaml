@@ -1,0 +1,102 @@
+# ============================================================
+#  日语直播实时翻译字幕 —— 配置文件
+#  改完保存，重启软件生效（GUI 里的设置项会覆盖这里的默认值）
+# ============================================================
+
+audio:
+  # 采集设备名关键字；留空 = 默认扬声器（WASAPI loopback 回环采集系统声音）
+  # 用 `python -m backend.main --list-devices` 查看可选设备
+  device: ""
+  # 直播声音偏小就调大，1.0 是原样
+  gain: 1.0
+
+vad:
+  # onnx | torch | energy —— 留空自动选择（推荐 onnx，最快最准）
+  backend: ""
+  # 判定为「在说话」的概率阈值，环境嘈杂就调高
+  threshold: 0.5
+  # 静音多久算一句话结束。调小 = 出字幕更及时但句子更碎；调大 = 句子更完整但更慢
+  min_silence_ms: 380
+  # 主播连珠炮不停顿时，最多攒多久就强制切一句（单位秒）
+  max_speech_s: 11.0
+  # 一段语音低于这个音量直接丢弃
+  min_rms: 0.0025
+
+asr:
+  # tiny | base | small | medium | large-v3 | large-v3-turbo | distil-large-v3
+  # 4070Ti 上 large-v3-turbo 是质量/速度的最佳平衡
+  model: large-v3-turbo
+  device: cuda          # cuda | cpu
+  compute_type: float16 # 显存不足改 int8_float16；CPU 用 int8
+  # 最终结果用 beam search，值越大越准越慢（3 足够）
+  beam_size_final: 3
+  # 「正在讲」的这句每隔多久重算一次，做出边说边出字幕的效果（0 = 关闭）
+  partial_interval_ms: 550
+  # 长句强制切段的时长上限（秒），超过就不再做 partial
+  partial_max_s: 16.0
+  # 幻觉过滤阈值：越宽松越不容易误杀，但更容易把静音识别成文字
+  no_speech_threshold: 0.55
+  log_prob_threshold: -1.05
+  compression_ratio_threshold: 2.2
+
+translate:
+  # llm = 在线大模型（质量最好，需要 API Key） | local = 本地 NMT（免费离线） | off = 只显示日文
+  # 现在设为 local：本地模型已下载好，不需要 Key、不花钱、断网可用
+  # 想要更好的翻译质量就改成 llm 并配上 API Key（见 README 第二节）
+  provider: local
+  target_lang: 简体中文
+  # 带给模型的前文句数，越大越连贯但越慢、越贵（4 是甜点）
+  context_sentences: 4
+  timeout_s: 25
+
+  llm:
+    # 任何 OpenAI 兼容接口都行：
+    #   DeepSeek   https://api.deepseek.com            deepseek-chat
+    #   OpenAI     https://api.openai.com/v1           gpt-4o-mini
+    #   硅基流动    https://api.siliconflow.cn/v1        Qwen/Qwen2.5-7B-Instruct
+    #   本地 Ollama http://127.0.0.1:11434/v1          qwen2.5:7b
+    base_url: https://api.deepseek.com
+    model: deepseek-chat
+    # 建议不要写在这里，改用环境变量（见 README）
+    api_key: ""
+    api_key_env: JP_LIVE_TRANSLATOR_API_KEY
+    temperature: 0.2
+    max_tokens: 400
+    # 边生成边上屏，字幕更「活」
+    stream: false
+
+  local:
+    # transformers(推荐) | ct2
+    # 实测：社区微调的 OPUS-MT 转成 CTranslate2 后解码会退化，所以默认走 transformers。
+    # 只有当你手上有官方发布的 CT2 模型时才把 backend 改成 ct2。
+    backend: transformers
+    # 由 `python -m scripts.setup_local_mt` 下载
+    model_dir: models/hf-shun89__opus-mt-ja-zh
+    device: cpu        # CPU 就够快（约 130ms/句），不跟识别抢显存
+    beam_size: 2
+    # 防止小模型陷入重复循环
+    no_repeat_ngram_size: 4
+    max_new_tokens: 128
+    num_workers: 6     # CPU 线程数
+
+glossary:
+  enabled: true
+  path: glossary.yaml
+
+subtitle:
+  font_size: 30
+  source_font_size: 20
+  opacity: 0.82
+  background: "#0b0b10"
+  show_source: true      # 是否显示日文原文（双语）
+  max_lines: 3
+  # 多久没有新字幕就自动清屏（毫秒），0 = 不清
+  clear_after_ms: 25000
+
+server:
+  host: 127.0.0.1
+  port: 8765             # 本地 SSE 事件流端口（给字幕窗/第三方用）
+
+log:
+  level: info            # debug 会打印被过滤掉的幻觉片段，排查识别问题很有用
+  file: logs/jp-live-translator.log

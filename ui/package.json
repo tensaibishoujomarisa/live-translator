@@ -1,0 +1,14 @@
+{
+  "name": "jp-live-translator",
+  "version": "0.1.0",
+  "private": true,
+  "description": "日语直播实时翻译字幕 —— 本地 Whisper 识别 + 可切换翻译，透明置顶字幕窗",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev"
+  },
+  "devDependencies": {
+    "electron": "^32.2.0"
+  }
+}

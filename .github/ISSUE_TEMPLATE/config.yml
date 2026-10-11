@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 先看看 README 的故障排查
+    url: https://github.com/OWNER/REPO#六故障排查
+    about: 采不到声音、GPU 没被用上、翻译报 401 这类问题 README 里都有写
+  - name: 环境和设备自检
+    url: https://github.com/OWNER/REPO#一快速开始
+    about: 跑 05_自检.bat，它会逐项检查并给出结论

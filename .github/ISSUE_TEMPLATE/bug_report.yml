@@ -1,0 +1,73 @@
+name: Bug 反馈
+description: 字幕不出来 / 翻译不对 / 报错崩溃
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        先跑一遍 **`05_自检.bat`**，它通常能直接指出问题（缺依赖、设备选错、没配 Key）。
+        下面的信息越全，定位越快。
+  - type: textarea
+    id: what
+    attributes:
+      label: 现象
+      description: 发生了什么？你期望发生什么？
+      placeholder: |
+        例：日文能出来，但中文一直是空的
+    validations:
+      required: true
+  - type: textarea
+    id: selftest
+    attributes:
+      label: 05_自检.bat 的输出
+      description: 直接粘贴全文
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: 日志尾部
+      description: |
+        `logs/jp-live-translator.log` 的最后 30 行。
+        如果是「字幕内容不对」，把 `config.yaml` 里 `log.level` 改成 `debug` 再复现一次，
+        debug 日志会打印被幻觉过滤器丢掉的片段，很有用。
+      render: text
+    validations:
+      required: false
+  - type: dropdown
+    id: provider
+    attributes:
+      label: 翻译方式
+      options:
+        - 在线大模型（llm）
+        - 本地 NMT（local）
+        - 关闭（off）
+    validations:
+      required: true
+  - type: input
+    id: gpu
+    attributes:
+      label: 显卡与驱动
+      placeholder: "例：RTX 4070 Ti / 驱动 610.88；或 无独显"
+    validations:
+      required: true
+  - type: input
+    id: audio
+    attributes:
+      label: 音源设备
+      description: `05_自检.bat` 第 2 步里你选中的那个，或"默认输出设备"
+      placeholder: "例：耳机 (HyperX Cloud III) [Loopback]"
+    validations:
+      required: false
+  - type: textarea
+    id: sample
+    attributes:
+      label: 出问题的原句（可选但很有用）
+      description: |
+        日文原文 + 你看到的译文 + 你期望的译文。
+        如果是「翻译不对」这类问题，没有具体例句基本没法改。
+      render: text
+    validations:
+      required: false

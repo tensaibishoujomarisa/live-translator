@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;" />
+<title>日语直播实时翻译</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="app" class="app">
+
+    <!-- 顶部：平时几乎透明，鼠标移上去才显形 -->
+    <header id="bar" class="bar">
+      <div class="bar-left">
+        <span id="dot" class="dot idle"></span>
+        <span id="status" class="status">正在启动…</span>
+        <span id="level" class="level"><i id="level-fill"></i></span>
+        <span id="rtf" class="rtf"></span>
+      </div>
+      <div class="bar-right">
+        <button id="btn-pause" class="ibtn" title="暂停 / 恢复识别 (Ctrl+Shift+P)">⏸</button>
+        <button id="btn-clear" class="ibtn" title="清屏">🧹</button>
+        <button id="btn-click" class="ibtn" title="鼠标穿透：开着就能点下面的直播间 (Ctrl+Shift+M)">🖱</button>
+        <button id="btn-top" class="ibtn" title="置顶">📌</button>
+        <button id="btn-set" class="ibtn" title="设置">⚙</button>
+        <button id="btn-hide" class="ibtn" title="隐藏窗口 (Ctrl+Shift+H)">✕</button>
+      </div>
+    </header>
+
+    <!-- 字幕区 -->
+    <main id="subs" class="subs">
+      <div class="hint" id="hint">
+        <div class="hint-title">日语直播实时翻译</div>
+        <div class="hint-body">
+          正在加载本地识别模型，首次启动需要几十秒…<br />
+          <span class="dim">确认直播/视频正在播放声音即可，字幕会自动出现。</span>
+        </div>
+      </div>
+    </main>
+
+    <!-- 设置面板 -->
+    <section id="panel" class="panel hidden">
+      <div class="panel-head">
+        <strong>设置</strong>
+        <span id="running-info" class="dim">当前：未连接</span>
+        <button id="btn-close-panel" class="ibtn">✕</button>
+      </div>
+      <div class="panel-body">
+
+        <div class="group">
+          <div class="group-title">音频来源</div>
+          <label class="row">
+            <span>采集设备</span>
+            <select id="set-audioDevice"></select>
+          </label>
+          <div class="row">
+            <button id="btn-refresh-dev" class="sbtn">重新扫描设备</button>
+            <span id="dev-note" class="dim small"></span>
+          </div>
+          <label class="row">
+            <span>音量增益 <b id="v-gain">1.0</b></span>
+            <input id="set-gain" type="range" min="0.5" max="4" step="0.1" />
+          </label>
+          <label class="row">
+            <span>静音断句 (ms) <b id="v-sil">380</b></span>
+            <input id="set-minSilence" type="range" min="200" max="900" step="20" />
+          </label>
+          <div class="dim small">断句越小字幕越跟手，但句子更碎；连珠炮语速建议 300~450。</div>
+          <label class="row">
+            <span>语音判定阈值 <b id="v-vth">0.50</b></span>
+            <input id="set-vadThreshold" type="range" min="0.1" max="0.9" step="0.05" />
+          </label>
+          <div class="dim small">环境嘈杂/键盘声大就调高；主播说话轻、老是不出字幕就调低。</div>
+        </div>
+
+        <div class="group">
+          <div class="group-title">识别模型</div>
+          <label class="row">
+            <span>模型</span>
+            <select id="set-asrModel">
+              <option value="large-v3-turbo">large-v3-turbo（推荐，快且准）</option>
+              <option value="large-v3">large-v3（最准，更吃显存）</option>
+              <option value="medium">medium（低配）</option>
+              <option value="small">small（最低配）</option>
+            </select>
+          </label>
+          <label class="row">
+            <span>推理设备</span>
+            <select id="set-asrDevice">
+              <option value="cuda">GPU (cuda)</option>
+              <option value="cpu">CPU</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="group">
+          <div class="group-title">翻译</div>
+          <label class="row">
+            <span>方式</span>
+            <select id="set-provider">
+              <option value="llm">在线大模型（质量最好，需 API Key）</option>
+              <option value="local">本地 NMT（免费离线，需先下载模型）</option>
+              <option value="off">关闭翻译（只看日文）</option>
+            </select>
+          </label>
+          <label class="row"><span>接口地址</span><input id="set-baseUrl" type="text" placeholder="https://api.deepseek.com" /></label>
+          <label class="row"><span>模型名</span><input id="set-llmModel" type="text" placeholder="deepseek-chat" /></label>
+          <label class="row"><span>API Key</span><input id="set-apiKey" type="password" placeholder="sk-..." /></label>
+          <div class="dim small">Key 只保存在本机 ui-settings.json，不会上传到任何第三方。</div>
+          <label class="row">
+            <span>上下文句数 <b id="v-ctx">4</b></span>
+            <input id="set-contextSentences" type="range" min="0" max="10" step="1" />
+          </label>
+        </div>
+
+        <div class="group">
+          <div class="group-title">字幕外观</div>
+          <label class="row">
+            <span>中文大小 <b id="v-fs">30</b></span>
+            <input id="set-fontSize" type="range" min="14" max="64" step="1" />
+          </label>
+          <label class="row">
+            <span>日文大小 <b id="v-sfs">20</b></span>
+            <input id="set-sourceFontSize" type="range" min="10" max="48" step="1" />
+          </label>
+          <label class="row">
+            <span>背景不透明度 <b id="v-op">0.82</b></span>
+            <input id="set-opacity" type="range" min="0" max="1" step="0.02" />
+          </label>
+          <label class="row checkbox"><input id="set-showSource" type="checkbox" /><span>显示日文原文（双语字幕）</span></label>
+          <label class="row checkbox"><input id="set-alwaysOnTop" type="checkbox" /><span>窗口置顶</span></label>
+        </div>
+
+        <div class="group">
+          <div class="group-title">快捷键</div>
+          <div class="dim small">
+            Ctrl+Shift+H 显示/隐藏窗口　Ctrl+Shift+P 暂停/恢复<br />
+            Ctrl+Shift+M 鼠标穿透　Ctrl+Shift+↑/↓ 字号增减
+          </div>
+        </div>
+
+        <div class="group">
+          <div class="row">
+            <button id="btn-apply" class="sbtn primary">保存并重启后端</button>
+            <button id="btn-openlog" class="sbtn">打开日志</button>
+            <button id="btn-quit" class="sbtn danger">退出程序</button>
+          </div>
+          <div id="save-note" class="dim small"></div>
+        </div>
+
+      </div>
+    </section>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

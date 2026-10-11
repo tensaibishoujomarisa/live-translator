@@ -1,0 +1,149 @@
+"""术语表 / 人名对照表。
+
+两种用途：
+  * LLM 翻译时作为 prompt 里的强制对照（最有效）
+  * 翻译结果的后处理替换（本地 NMT 时的主要手段）
+
+文件格式（glossary.yaml，缺文件也能跑）：
+    entries:
+      - ja: ぺこら
+        zh: 佩克拉
+        note: 主播名，不要意译
+      - ja: ホロライブ
+        zh: hololive
+    # 也可以只写普通文本，一行一条：
+    # ぺこら = 佩克拉
+"""
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from .util import get_logger
+
+log = get_logger("jplt.glossary")
+
+
+@dataclass
+class Entry:
+    ja: str
+    zh: str
+    note: str = ""
+    case_sensitive: bool = False
+    # 模型可能吐出来的音译/异体写法，例如 スパチャ → "Spacha"
+    alts: list[str] = field(default_factory=list)
+
+
+class Glossary:
+    def __init__(self, entries: list[Entry] | None = None):
+        self.entries: list[Entry] = entries or []
+
+    # ---------- 加载 ----------
+    @classmethod
+    def load(cls, path: str | Path | None, enabled: bool = True) -> "Glossary":
+        if not enabled or not path:
+            return cls([])
+        p = Path(path)
+        if not p.exists():
+            log.debug("术语表不存在：%s", p)
+            return cls([])
+        text = p.read_text(encoding="utf-8")
+        entries: list[Entry] = []
+        data = None
+        try:
+            import yaml  # type: ignore
+
+            data = yaml.safe_load(text)
+        except Exception:
+            try:
+                import json
+
+                data = json.loads(text)
+            except Exception:
+                data = None
+
+        if isinstance(data, dict):
+            raw = data.get("entries") or data.get("terms") or []
+            if isinstance(raw, dict):
+                raw = [{"ja": k, "zh": v} for k, v in raw.items()]
+            for item in raw:
+                if not isinstance(item, dict):
+                    continue
+                ja = str(item.get("ja") or item.get("src") or "").strip()
+                zh = str(item.get("zh") or item.get("dst") or "").strip()
+                if ja and zh:
+                    alts = item.get("alt") or item.get("alts") or []
+                    if isinstance(alts, str):
+                        alts = [alts]
+                    entries.append(
+                        Entry(
+                            ja=ja,
+                            zh=zh,
+                            note=str(item.get("note") or ""),
+                            case_sensitive=bool(item.get("case_sensitive")),
+                            alts=[str(a) for a in alts if a],
+                        )
+                    )
+        else:
+            # 退化格式： あ = ア
+            for line in text.splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                m = re.match(r"^(.+?)\s*[=＝:：]\s*(.+)$", line)
+                if m:
+                    entries.append(Entry(ja=m.group(1).strip(), zh=m.group(2).strip()))
+
+        log.info("载入术语表 %d 条 (%s)", len(entries), p.name)
+        return cls(entries)
+
+    def __len__(self) -> int:
+        return len(self.entries)
+
+    # ---------- prompt ----------
+    def prompt_block(self, limit: int = 80) -> str:
+        if not self.entries:
+            return ""
+        lines = []
+        for e in self.entries[:limit]:
+            if e.note:
+                lines.append(f"- {e.ja} → {e.zh}（{e.note}）")
+            else:
+                lines.append(f"- {e.ja} → {e.zh}")
+        return "\n".join(lines)
+
+    # ---------- 后处理 ----------
+    def apply(self, text: str) -> str:
+        """把译文里残留的日文原词替换成术语表指定的中文。
+
+        本地 NMT 常把片假名音译成汉字（スパチャ → Spacha、リスナー → Risner），
+        所以除了原词本身，也顺手把「假名互换写法」和条目里 alt 字段列出的变体一起替换。
+        """
+        if not text or not self.entries:
+            return text
+        out = text
+        # 长的先替换，避免短词破坏长词
+        for e in sorted(self.entries, key=lambda x: -len(x.ja)):
+            if not e.ja or e.ja == e.zh:
+                continue
+            variants = [e.ja, _katakana_variant(e.ja)]
+            variants += [str(v) for v in getattr(e, "alts", []) if v]
+            for v in variants:
+                if v and v != e.zh and v in out:
+                    out = out.replace(v, e.zh)
+        return out
+
+
+def _katakana_variant(s: str) -> str:
+    """把片假名转平假名（反之亦然），用于容忍识别结果的假名写法差异。"""
+    out = []
+    for ch in s:
+        code = ord(ch)
+        if 0x30A1 <= code <= 0x30F6:  # 片假名 → 平假名
+            out.append(chr(code - 0x60))
+        elif 0x3041 <= code <= 0x3096:  # 平假名 → 片假名
+            out.append(chr(code + 0x60))
+        else:
+            out.append(ch)
+    return "".join(out)

@@ -1,0 +1,77 @@
+# 变更日志
+
+本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
+
+## [0.1.0] - 2026-10-11
+
+首个可用版本。目标场景：看日语直播（主播语速接近日常日本人语速、比影视剧略快）时，
+屏幕底部实时显示「日语原文 + 中文译文」双语字幕。
+
+### 识别（本地，完全离线）
+
+- faster-whisper + large-v3-turbo，GPU float16。实测 7 秒音频约 300ms，实时率 **x0.05**
+- **两段式字幕**：讲话过程中每 550ms 用贪心解码重跑一次当前句，先显示灰色未定稿日文；
+  句末静音 380ms 后用 beam search 定稿
+- **VAD 切句**用 Silero VAD，不是能量检测。注意 Silero 要求每帧前拼上一帧末尾 64 个采样当
+  上下文（模型实际吃 576 点），不拼的话输出恒为 ~0.001，VAD 等于完全失效
+- **五道幻觉闸门**：`condition_on_previous_text=False`、VAD 前置确认、三个置信度阈值
+  （`no_speech_prob` / `avg_logprob` / `compression_ratio`）、重复模式检测、口癖黑名单
+- 连续讲话超过 `max_speech_s`（默认 11s）强制在自然停顿处切段，避免字幕无限等
+- 无 GPU 时自动回退 CPU/int8
+
+### 翻译（可切换）
+
+- `llm`：任何 OpenAI 兼容接口（DeepSeek / OpenAI / 硅基流动 / 本地 Ollama）。
+  实测真实 DeepSeek 延迟 550~800ms
+- `local`：MarianMT 日→中，CPU 约 130ms/句，免费离线，**不占显存**
+- `off`：只看日文
+- **滚动上下文**：把最近 4 句「日→中」对照一起给模型，日语省略主语时指代才不乱
+- **术语表**：`glossary.yaml` 里的词强制使用指定译法。LLM 走 prompt 约束，本地 NMT 走
+  后处理替换（含平假名/片假名互换写法、以及 `alt` 字段列的音译变体）
+- **译文清理**：剥代码块、剥「翻译：」前缀、丢弃日文原文回显
+- **熔断**：连续失败 4 次后停止翻译并提示一次可读原因（Key 无效 / 限流 / 服务故障），
+  不会每句话刷一条错误
+
+### 字幕窗（Electron）
+
+- 透明、无边框、可置顶、可鼠标穿透（`Ctrl+Shift+M`），贴屏幕底部
+- 双语显示，中文实心、未定稿日文半透明
+- 设置面板：采集设备、音量增益、静音断句、语音判定阈值、识别模型、翻译方式与 Key、
+  上下文字句数、字号/透明度/双语开关，面板顶部显示**当前实际在跑什么**
+- 关掉不需重启（断句/阈值/上下文走热更新），换模型/换翻译后端才重启
+
+### 音频采集
+
+- WASAPI loopback 采集系统声音。优先 PyAudioWPatch（自带 loopback 补丁），
+  sounddevice 仅在其 PortAudio 支持 `WasapiSettings(loopback=True)` 时可用
+- 默认设备按**名字**匹配（默认输出的索引属于 MME 空间，loopback 端点属于 WASAPI 空间，
+  拿数字比必然错位）
+
+### 工程
+
+- 本地 SSE 事件流（`/events`），供第三方或 OBS 使用；新连接会**补发粘性状态**
+  （ready/status），断线重连也不会卡在「正在启动」
+- CLI：`--doctor` / `--list-devices` / `--probe-audio` / `--test-asr` / `--pretty` / `--serve`
+- 测试：mock LLM 链路（44 项）、多句译文累积、SSE 补发、整机验收、UI DOM 渲染（36 项）、
+  Electron 冒烟、发布前洁净室检查
+
+### 已知限制
+
+- 只有 Windows（依赖 WASAPI loopback）
+- 只翻日语（`asr.language` 固定 ja）
+- 不翻译弹幕，只处理直播音轨
+- UI 设置里的 API Key 是明文存在 `ui-settings.json`，也会出现在进程命令行里；
+  建议改用环境变量 `JP_LIVE_TRANSLATOR_API_KEY`
+- 本地 NMT 质量有限（网络梗和省略句容易翻飞），追求观感请用 LLM
+
+### 踩过的坑（留档，避免重复踩）
+
+- **CT2 转换会毁模型**：社区微调的 OPUS-MT 转成 CTranslate2 后解码器不收敛，
+  输出「红红红红…」。同一份权重用 transformers 原样加载正常，所以本地 NMT 默认走 transformers
+- **cublas64_12.dll 找不到**：GPU 版 torch 不提供 CTranslate2 需要的 CUDA 12 运行库，
+  需要单独装 `nvidia-cublas-cu12` / `nvidia-cudnn-cu12`，并在导入前把 DLL 目录加进搜索路径
+- **`.bat` 里不能有中文**：`chcp 65001` 生效前 cmd 按系统代码页解析，字节错位会把行拼起来；
+  `set /p` 的提示文本里不能有 `[]`、`,`、`?`；`echo` 行里 `"%VAR%"` 的引号会被当命令；
+  UTF-8 BOM 会让 `@echo off` 解析失败
+- **测试要避开真实实例**：用户可能正开着字幕程序占着 8765，测试若用固定端口会连到旧进程上，
+  现象是「ready 永远收不到」，极难排查。现在测试用随机端口并校验 `/debug/sticky` 存在

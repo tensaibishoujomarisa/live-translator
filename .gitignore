@@ -1,0 +1,66 @@
+# ============================================================
+#  日语直播实时翻译字幕 —— 不该进仓库的东西
+# ============================================================
+
+# ---- 本机私有配置（含 API Key，绝对不能提交）----
+ui-settings.json
+config.local.yaml
+*.local.yaml
+.env
+.env.*
+secrets.json
+
+# ---- Python 虚拟环境 ----
+.venv/
+venv/
+env/
+ENV/
+*.egg-info/
+.python-version
+
+# ---- 模型与下载缓存（约 2GB，用户自己跑脚本下）----
+models/
+.cache/
+!models/.gitkeep
+
+# ---- Node / Electron ----
+node_modules/
+ui/node_modules/
+ui/dist/
+ui/out/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# ---- 运行时产物 ----
+logs/
+*.log
+testdata/*.wav
+testdata/*.flac
+testdata/*.npy
+!testdata/README.md
+
+# ---- 缓存 ----
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+*.pyc
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+*.swp
+*.swo
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# ---- 临时文件 ----
+*.tmp
+*.bak
+*.orig
+*~
