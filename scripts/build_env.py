@@ -1,4 +1,4 @@
-﻿"""为发行版准备一套「干净、自包含、可打包」的依赖环境。
+"""为发行版准备一套「干净、自包含、可打包」的依赖环境。
 
 为什么要单独建：开发用的 `.venv` 是 `--system-site-packages` 建的，
 torch/transformers/numpy 都继承自系统 Python（torch 占 4.2GB，且是 CUDA 版）。
@@ -33,6 +33,10 @@ RUNTIME_PACKAGES = [
     "PyAudioWPatch",
     # VAD 与数值
     "onnxruntime",
+    # VAD 模型本体（自带 silero_vad.onnx）。
+    # 注意：这个包必须显式装上 —— 少了它 VAD 会静默退化成能量检测，
+    # 断句明显变碎，而且只在日志里留一行 warning，很容易漏掉。
+    "silero-vad",
     "numpy",
     "scipy",
     # 翻译：LLM 调用 + 本地 NMT
@@ -89,6 +93,71 @@ def run(cmd: list[str], **kw) -> int:
     return subprocess.call(cmd, **kw)
 
 
+def install_torch_cpu_direct(py: Path) -> int:
+    """直接从 pytorch 的 CPU 索引把 wheel 下下来再本地安装。
+
+    `pip install --index-url` 在走代理时容易在依赖解析/续传阶段卡死或超时
+    （实测 Read timed out）。先把 wheel 单独抓下来再 `pip install <file>` 稳得多。
+    """
+    import re
+    import urllib.request
+
+    py_tag = "cp312"
+    try:
+        out = subprocess.run(
+            [str(py), "-c",
+             "import sys;print('cp%d%d' % sys.version_info[:2])"],
+            capture_output=True, text=True,
+        )
+        if (out.stdout or "").strip():
+            py_tag = out.stdout.strip()
+    except Exception:
+        pass
+
+    index = "https://download.pytorch.org/whl/cpu/torch/"
+    log(f"      查询可用 wheel（{py_tag} win_amd64）：{index}")
+    try:
+        req = urllib.request.Request(index, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=60) as r:
+            html = r.read().decode("utf-8", "ignore")
+    except Exception as exc:
+        log(f"      查询失败：{type(exc).__name__}: {exc}")
+        return 1
+
+    pat = re.compile(r'href="[^"]*/(torch-[^"/]*?%s[^"/]*?win_amd64\.whl)"' % re.escape(py_tag))
+    names = pat.findall(html)
+    # 排除带 cuda 标记的（CPU 索引里一般没有，但保险）
+    names = [n for n in names if "cuda" not in n and "+cpu" not in n]
+    if not names:
+        log("      没找到匹配的 wheel")
+        return 1
+
+    def vkey(fname: str):
+        m = re.search(r"torch-([0-9]+(?:\.[0-9]+)*)", fname)
+        return tuple(int(x) for x in (m.group(1).split(".") if m else ["0"]))
+
+    fname = sorted(names, key=vkey)[-1]
+    url = index + fname
+    dest = BUILD / "wheels" / fname
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    log(f"      下载 {fname}")
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=600) as r, open(dest, "wb") as f:
+            shutil.copyfileobj(r, f, length=1024 * 256)
+        log(f"      已下载 {dest.stat().st_size / 1024 / 1024:,.1f} MB")
+    except Exception as exc:
+        log(f"      下载失败：{type(exc).__name__}: {exc}")
+        try:
+            dest.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return 1
+
+    return run([str(py), "-m", "pip", "install", "--no-input", "--progress-bar", "off",
+                "--disable-pip-version-check", str(dest)])
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--force", action="store_true", help="已存在也重建")
@@ -131,17 +200,21 @@ def main() -> int:
 
     ensure_proxy()
     base = [str(py), "-m", "pip", "install", "--no-input", "--progress-bar", "off",
-            "--disable-pip-version-check"]
+            "--disable-pip-version-check",
+            # CPU 版 torch 约 200MB，走代理时默认 15s 超时不够，放宽
+            "--timeout", "300", "--retries", "8"]
 
     # 2) 先装 CPU 版 torch —— 必须在 transformers 之前，
     #    否则 transformers 可能把 CUDA 版 torch 一起拖进来（多 4GB）
     if not args.skip_torch:
-        log(f"\n[2/4] 安装 CPU 版 torch（比 CUDA 版小约 4GB）")
-        log(f"      从 https://download.pytorch.org/whl/cpu 取，国内可能较慢")
+        log(f"\n[2/4] 安装 CPU 版 torch（比 CUDA 版省约 4GB）")
         t0 = time.time()
         rc = run(base + ["torch", "--index-url", "https://download.pytorch.org/whl/cpu"])
         if rc != 0:
-            log("      [warn] CPU 版装失败，退回默认源（可能装上 CUDA 版，体积会大很多）")
+            log("      [warn] 索引方式失败，改为直接下载 wheel 再本地安装")
+            rc = install_torch_cpu_direct(py)
+        if rc != 0:
+            log("      [warn] 仍失败，退回默认源（会装上 CUDA 版，体积大很多）")
             rc = run(base + ["torch"])
             if rc != 0:
                 log("[error] torch 安装失败")

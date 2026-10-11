@@ -88,6 +88,12 @@ class Pipeline:
             sample_rate=int(c.get("audio", "sample_rate", default=16000)),
             models_dir=models_dir,
         )
+        # 退化成 energy 是明显的质量损失，主动提示一次（别等用户看日志才发现）
+        if getattr(vad, "name", "") == "energy":
+            self.bridge.warn(
+                "语音断句在用兜底方案（energy），快速口语下会切得比较碎。"
+                "修复：安装 silero-vad（pip install silero-vad）或跑 scripts/setup_vad.py"
+            )
         self.segmenter = Segmenter(
             vad,
             sample_rate=int(c.get("audio", "sample_rate", default=16000)),

@@ -177,8 +177,16 @@ class EnergyVad(VadBackend):
 # ---------------------------------------------------------------- 工厂
 
 
-def create_vad(kind: str = "", sample_rate: int = 16000, models_dir: Path | None = None) -> VadBackend:
-    """按 backend 配置创建 VAD。kind 为空则自动探测。"""
+def create_vad(kind: str = "", sample_rate: int = 16000,
+               models_dir: "Path | str | None" = None) -> VadBackend:
+    """按 backend 配置创建 VAD。kind 为空则自动探测。
+
+    models_dir 接受 Path 或 str —— 之前只接受 Path，传 str 会在
+    `models_dir / "silero_vad.onnx"` 处抛 TypeError，被这里的 except 吞掉后
+    **静默降级成 energy VAD**（断句质量明显变差却不报错）。实测踩过。
+    """
+    if models_dir is not None and not isinstance(models_dir, Path):
+        models_dir = Path(str(models_dir))
     order = [kind] if kind else ["onnx", "torch", "energy"]
     errors: list[str] = []
     for name in order:
@@ -186,7 +194,9 @@ def create_vad(kind: str = "", sample_rate: int = 16000, models_dir: Path | None
             if name == "onnx":
                 path = _find_onnx_model(models_dir)
                 if not path:
-                    raise FileNotFoundError("找不到 silero_vad.onnx")
+                    raise FileNotFoundError(
+                        "找不到 silero_vad.onnx（装一下： pip install silero-vad）"
+                    )
                 log.info("VAD: onnx (%s)", path.name)
                 return OnnxSileroVad(path, sample_rate=sample_rate)
             if name == "torch":
@@ -207,11 +217,21 @@ def create_vad(kind: str = "", sample_rate: int = 16000, models_dir: Path | None
         except Exception as exc:
             errors.append(f"{name}: {type(exc).__name__}: {exc}")
             log.debug("VAD %s 不可用: %s", name, exc)
-    log.warning("所有指定 VAD 都不可用，使用 energy 兜底。详情: %s", " | ".join(errors))
+
+    # 退化成能量检测是明显的质量损失，用 ERROR 级别喊出来 ——
+    # 之前是 warning，混在启动日志里很容易被忽略（发行版就漏过一次）。
+    log.error(
+        "所有神经网络 VAD 都不可用，退化为能量检测。"
+        "快速口语下断句会偏碎，建议跑 `python -m scripts.setup_vad` "
+        "或 `pip install silero-vad`。详情: %s",
+        " | ".join(errors),
+    )
     return EnergyVad(sample_rate=sample_rate)
 
 
-def _find_onnx_model(models_dir: Path | None) -> Path | None:
+def _find_onnx_model(models_dir: Path | str | None) -> Path | None:
+    if models_dir is not None and not isinstance(models_dir, Path):
+        models_dir = Path(str(models_dir))
     cands = []
     if models_dir:
         cands += [

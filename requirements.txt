@@ -7,14 +7,15 @@
 # 语音识别（CTranslate2 后端，比 openai-whisper 快 4 倍以上）
 faster-whisper>=1.0.3
 
+# VAD 模型本体：它自带 silero_vad.onnx，vad.py 会去这个包里找。
+# 没有它 VAD 会退化成能量检测，快速口语下断句明显变碎 —— 算运行期依赖，不是可选项。
+silero-vad>=5.1
+
 # GPU 推理需要的 CUDA 12 运行库（CTranslate2 不会自动找到它们）
 # 约 700MB；只用 CPU 的话可以不装，配置里 asr.device 改 cpu
-nvidia-cublas-cu12
-nvidia-cudnn-cu12
-
-# 语音活动检测（VAD）：给了 ONNX 模型，断句质量明显更好
-# 可选；装了就不必依赖下面的 energy 兜底
-silero-vad>=5.1
+# 注意：本地翻译用 CPU 版 torch，与这两个包无关
+# nvidia-cublas-cu12
+# nvidia-cudnn-cu12
 
 # 系统声音回环采集（Windows WASAPI loopback）
 sounddevice>=0.4.6
