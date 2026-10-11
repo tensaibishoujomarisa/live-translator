@@ -2,6 +2,21 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.2.2] - 2026-10-12
+
+### 新增
+
+- **术语批量导入**：`python -m backend.main --import-terms terms_xxx.draft.yaml`
+  - 给某个特定主播加术语时，手工往 `glossary.yaml` 里贴很容易把 YAML 缩进写坏，
+    现在一条命令搞定
+  - **只追加、不重写**：`Glossary.append_entries()` 只往文件末尾加行，
+    用户手写的注释、分组、`alt` 列表一个字节都不动
+    （原来的 `write_entries` 会整份重写，注释全丢）
+  - 已存在的同名条目会被跳过而不是覆盖，并自动备份 `.bak`
+- `scripts/check_draft_terms.py`：导入前检查草案格式、报冲突、在副本上演练效果
+- `terms_hinome.draft.yaml`：火羽ひのめ（B站日V）的候选术语（姓名 + 直播用语）。
+  她的个人梗没有收录 —— 没有可靠来源，不编。
+
 ## [0.2.1] - 2026-10-12
 
 ### 修复
