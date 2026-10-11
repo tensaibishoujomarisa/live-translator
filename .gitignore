@@ -23,6 +23,16 @@ models/
 .cache/
 !models/.gitkeep
 
+# ---- 构建产物（发行版 2GB+ / 依赖环境 1GB+，绝对不该进仓库）----
+# 踩过的坑：一次 `git add -A` 把 dist/ 整个提交了，
+# 仓库瞬间涨到 1.38GB、2 万多个文件，GitHub 单文件超 100MB 会直接拒收。
+dist/
+build/
+release/
+*.zip
+*.7z
+*.tar.gz
+
 # ---- Node / Electron ----
 node_modules/
 ui/node_modules/
