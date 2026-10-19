@@ -41,15 +41,27 @@ def _candidate_dirs() -> list[Path]:
     dirs: list[Path] = []
 
     # 1) pip 安装的 nvidia-* 包
+    #
+    # 注意：nvidia 是**命名空间包**（PEP 420，没有 __init__.py），
+    # 所以 `nvidia.__file__` 是 None。原来直接 Path(nvidia.__file__).parent
+    # 会抛 TypeError 并被 except 吞掉 —— 表现为「装了 nvidia-cublas-cu12
+    # 但检测不到 CUDA」，实测踩过。必须改用 __path__。
     try:
         import nvidia  # type: ignore
 
-        for sub in Path(nvidia.__file__).parent.rglob("bin"):
-            if sub.is_dir():
-                dirs.append(sub)
-        for sub in Path(nvidia.__file__).parent.rglob("lib"):
-            if sub.is_dir():
-                dirs.append(sub)
+        roots: list[Path] = []
+        f = getattr(nvidia, "__file__", None)
+        if f:
+            roots.append(Path(f).parent)
+        for p in (getattr(nvidia, "__path__", None) or []):
+            roots.append(Path(p))
+        for root in roots:
+            for sub in root.rglob("bin"):
+                if sub.is_dir():
+                    dirs.append(sub)
+            for sub in root.rglob("lib"):
+                if sub.is_dir():
+                    dirs.append(sub)
     except Exception:
         pass
 
