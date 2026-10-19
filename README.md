@@ -1,4 +1,4 @@
-# 日语直播实时翻译字幕
+﻿# 日语直播实时翻译字幕
 
 看日语直播时，在屏幕底部悬浮一行**「日文原文 + 中文译文」**双语字幕。
 识别在本机跑（Whisper large-v3-turbo + GPU），**看直播时不需要联网、不需要代理**；
@@ -286,7 +286,50 @@ Silero VAD 判断语音边界，`min_silence_ms` 默认 380ms —— 比一般�
 
 ---
 
-## 七、故障排查
+## 七、定时自动守直播（起床不用管）
+
+如果主播固定某个时间开播（比如日本时间早 9 点 = 北京早 8 点），
+可以用计划任务让她开播时自动把直播页打开，字幕程序顺手就开始翻。
+
+本仓库带了一个 `scripts/auto_open_stream.ps1`，它做三件事：
+
+1. 如果字幕程序没在跑，先启动它
+2. **每分钟查一次主播的 YouTube RSS**，发现新视频（= 开播）就继续
+3. 等 30 秒让直播稳定，再用 Chrome 打开直播页（带自动播放参数）
+
+**为什么不能提前一晚挂着页面**：YouTube 上如果主播不提前创建「预约直播」，
+`/live` 页面在未开播时是「此频道目前没有直播」，等她开播后那个页面**不会自动变成直播**。
+必须先检测到开播、再打开，才会自动播放。
+
+安装（改成你要的主播）：
+
+```powershell
+$script = 'G:\projects\jp-live-translator\scripts\auto_open_stream.ps1'
+$action  = New-ScheduledTaskAction -Execute 'powershell.exe' `
+  -Argument ('-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}"' -f $script)
+$trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Wednesday, Saturday, Sunday -At '07:55'
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries `
+  -DontStopIfGoingOnBatteries -StartWhenAvailable `
+  -ExecutionTimeLimit (New-TimeSpan -Hours 2) -MultipleInstances IgnoreNew
+Register-ScheduledTask -TaskName 'HinomeLiveAutoOpen' -Action $action `
+  -Trigger $trigger -Settings $settings -Force
+```
+
+删除：`Unregister-ScheduledTask -TaskName 'HinomeLiveAutoOpen' -Confirm:$false`
+
+**必须满足的条件**：
+
+- **电脑不能关机/睡眠** —— 休眠会停掉音频输出和采集，字幕就没了
+  （电源设置里把「睡眠」设为「从不」，屏幕可以关）
+- 保持**已登录**状态（计划任务是 Interactive 模式）
+- Chrome 和字幕程序都会出现在任务栏，别手动关掉
+
+日志：`logs/auto_open.log`（什么时候启动、第几次检测到开播、打开了哪个页面）
+记住已见的视频 ID：`logs/last_video_id.txt`（删掉它会重新以当前最新视频为基准）
+
+---
+
+## 八、故障排查
 
 先跑 `05_自检.bat`，它会逐项检查环境、设备、电平、翻译配置。
 
@@ -340,7 +383,7 @@ API Key 不对或没余额。注意 `base_url` 结尾不用写 `/chat/completion
 
 ---
 
-## 八、目录结构
+## 九、目录结构
 
 ```
 jp-live-translator/
@@ -381,7 +424,7 @@ jp-live-translator/
 
 ---
 
-## 九、进阶：不装 Electron 也能用
+## 十、进阶：不装 Electron 也能用
 
 核心功能全在 Python 侧，Electron 只是个显示层。
 
@@ -407,7 +450,7 @@ rem 然后浏览器打开 http://127.0.0.1:8765/events
 
 ---
 
-## 十、开发者：怎么验证改动没搞坏
+## 十一、开发者：怎么验证改动没搞坏
 
 五个层次，从快到慢：
 
@@ -455,7 +498,7 @@ npx electron . --smoke      rem 拉起窗口 + 真后端，打印 SMOKE_RESULT �
 
 ---
 
-## 十一、已知限制
+## 十二、已知限制
 
 - **只有 Windows**：依赖 WASAPI loopback 采集系统声音。macOS 需要改 `audio_in.py`（用 BlackHole 之类的虚拟声卡），Linux 用 PulseAudio monitor。
 - **只翻日语**：识别模型固定 `language="ja"`。翻别的语言要改 `asr.language` 和 `asr.initial_prompt`。
