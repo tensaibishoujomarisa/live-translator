@@ -203,7 +203,10 @@ class StatsStore:
             "audio_total_s": round(total_audio, 1),
             "speech_total_s": round(speech_span, 1),
             "span_s": round(span, 1),
-            "speech_ratio": round(speech_span / span, 3) if span > 1 else 0.0,
+            # 语音密度 = 说话时长 / 音频总长。
+            # 不能用 speech_span / span（最早到最晚记录的时间跨度）——
+            # 记录会跨好几天，跨度被拉得极长，算出来永远是 1% 这种无意义值。
+            "speech_density": round(speech_span / total_audio, 3) if total_audio > 1 else 0.0,
         }
 
     # ---------- 建议 ----------

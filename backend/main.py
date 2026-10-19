@@ -389,8 +389,8 @@ def _stats_report(cfg: Config) -> int:
     print(f"  定稿段落    : {p['segments']} 段（其中 {p['voiced_segments']} 段有有效语音）")
     print(f"  累计音频    : {p['audio_total_s']:.0f} 秒")
     print(f"  实际说话    : {p['speech_total_s']:.0f} 秒")
-    if p["span_s"]:
-        print(f"  说话占比    : {p['speech_ratio'] * 100:.0f}%")
+    if p.get("speech_density"):
+        print(f"  语音密度    : {p['speech_density'] * 100:.0f}%（说话时长 / 音频总长）")
 
     print("\n[2] 语速")
     print(f"  中位语速    : {p['cps_median']} 字/秒")
