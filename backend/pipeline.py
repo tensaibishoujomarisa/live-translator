@@ -27,6 +27,7 @@ from .audio_in import AudioCapture
 from .bridge import Bridge
 from .config import Config
 from .mt_context import RollingContext, needs_translation
+from .stream_stats import StatsStore
 from .translator import TranslationDisabled, Translator, create_translator
 from .util import get_logger, split_sentences
 from .vad import Segmenter, create_vad
@@ -49,6 +50,9 @@ class Pipeline:
         self.capture: AudioCapture | None = None
         self.asr: AsrEngine | None = None
         self.translator: Translator | None = None
+        # 语速/电平采集（用于自动调参）
+        self.stats: StatsStore | None = None
+        self._auto_tuning: dict = {}
 
         self._partial_lock = threading.Lock()
         self._partial_stop = threading.Event()
@@ -79,7 +83,65 @@ class Pipeline:
         self._last_final: tuple[tuple[str, int], float] | None = None
 
     # ---------------------------------------------------------------- 启动
+    def _apply_auto_tuning(self) -> None:
+        """按历史语速/电平数据，自动调整几个安全的参数。
+
+        只动这几个旋钮（都能直接改善断句和识别）：
+          vad.min_silence_ms     断句灵敏度
+          audio.gain             音频增益（声音小 → 准确度掉，这个最有效）
+          asr.partial_interval_ms 局部刷新间隔
+
+        不动：模型、device、compute_type、显存相关。
+        """
+        c = self.cfg
+        if not bool(c.get("tuning", "enabled", default=True)):
+            return
+        try:
+            path = c.get_path("tuning", "path")
+            if not path:
+                return
+            store = StatsStore(path, window=int(c.get("tuning", "window", default=300)))
+            self.stats = store
+            rec = store.recommend()
+            self._auto_tuning = rec
+            overrides = rec.get("overrides") or {}
+            notes = rec.get("notes") or []
+            if not notes:
+                return
+            if not bool(c.get("tuning", "auto_apply", default=True)):
+                for n in notes:
+                    log.info("调参建议（未应用）：%s", n)
+                return
+            if not overrides:
+                for n in notes:
+                    log.info("调参：%s", n)
+                return
+
+            # 把 "vad.min_silence_ms" 这种点号键展开成嵌套 dict
+            nested: dict = {}
+            for dotted, val in overrides.items():
+                if "." not in dotted:
+                    continue
+                sec, key = dotted.split(".", 1)
+                nested.setdefault(sec, {})[key] = val
+            if nested:
+                self.cfg = c.with_overrides(nested)
+                log.info("自动调参已应用：%s", overrides)
+                self.bridge.status(
+                    "tuning",
+                    "已按你之前的直播数据自动调参：" + "、".join(notes),
+                )
+            for n in notes:
+                log.info("调参依据：%s", n)
+        except Exception as exc:
+            log.warning("自动调参失败（忽略，用默认参数继续）：%s", exc)
+
     def build(self) -> None:
+        # 「按历史数据自动调参」要在读参数**之前**跑，否则改的值不会生效。
+        # 只调这几个安全的旋钮（断句阈值/增益/局部刷新），不动模型和显存设置。
+        # 注意：必须在这里才取 self.cfg —— 调参内部会替换成新的 Config 对象，
+        # 如果在调参之前就先 c = self.cfg，后面用的还是旧对象，等于白调。
+        self._apply_auto_tuning()
         c = self.cfg
         models_dir = Path(c.root) / "models"
 
@@ -289,6 +351,19 @@ class Pipeline:
             self._last_final = (key, now)
 
             self.counters["finals"] += 1
+            # 记一条语速/电平数据，供「自动调参」用（只存数值，不存文本）
+            if self.stats is not None:
+                try:
+                    self.stats.add(
+                        audio_s=res.audio_s,
+                        text=res.text,
+                        speech_ms=float(seg.get("speech_ms") or 0.0),
+                        rms=float(seg.get("rms") or 0.0),
+                        no_speech=float(res.no_speech_prob or 0.0),
+                        compute_ms=float(res.compute_s * 1000),
+                    )
+                except Exception as exc:
+                    log.debug("记录统计失败：%s", exc)
             self._last_progress = time.time()
             self.asr.remember(res.text)
             rtf = res.compute_s / max(res.audio_s, 1e-6)

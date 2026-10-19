@@ -364,6 +364,72 @@ def _load_audio(p: Path):
 # ---------------------------------------------------------------- 主流程
 
 
+def _stats_report(cfg: Config) -> int:
+    """分析采集到的语速/电平数据，打印画像和建议。"""
+    from .stream_stats import StatsStore
+
+    path = cfg.get_path("tuning", "path")
+    if not path:
+        print("[ERROR] 配置里没有 tuning.path")
+        return 1
+    store = StatsStore(path, window=int(cfg.get("tuning", "window", default=300)))
+    p = store.profile()
+    rec = store.recommend()
+
+    print("=" * 66)
+    print(" 直播数据分析")
+    print("=" * 66)
+    print(f"数据文件: {path}")
+    if not p["segments"]:
+        print("\n还没有采集到数据 —— 先正常看一场直播，程序会自动记录。")
+        print("（只记数值：语速、电平、耗时；不记字幕内容）")
+        return 0
+
+    print("\n[1] 样本")
+    print(f"  定稿段落    : {p['segments']} 段（其中 {p['voiced_segments']} 段有有效语音）")
+    print(f"  累计音频    : {p['audio_total_s']:.0f} 秒")
+    print(f"  实际说话    : {p['speech_total_s']:.0f} 秒")
+    if p["span_s"]:
+        print(f"  说话占比    : {p['speech_ratio'] * 100:.0f}%")
+
+    print("\n[2] 语速")
+    print(f"  中位语速    : {p['cps_median']} 字/秒")
+    print(f"  P90 语速    : {p['cps_p90']} 字/秒")
+    print(f"  平均每段    : {p['chars_avg']} 字")
+    print("  参考：日语日常会话约 5~7 字/秒，新闻播报约 7~8")
+
+    print("\n[3] 音频")
+    print(f"  电平中位数  : {p['rms_median']}")
+    print(f"  非语音概率  : {p['no_speech_median']}")
+    print(f"  识别耗时    : {p['compute_ms_median']} ms/段")
+
+    print("\n[4] 建议")
+    if rec["notes"]:
+        for n in rec["notes"]:
+            print(f"  · {n}")
+    else:
+        print("  · 暂无建议")
+    if rec["overrides"]:
+        print("\n  auto_apply 开启时，下次启动会应用：")
+        for k, v in rec["overrides"].items():
+            print(f"    {k} = {v}")
+    print("=" * 66)
+    return 0
+
+
+def _stats_clear(cfg: Config) -> int:
+    from .stream_stats import StatsStore
+
+    path = cfg.get_path("tuning", "path")
+    if not path:
+        print("[ERROR] 配置里没有 tuning.path")
+        return 1
+    store = StatsStore(path, window=int(cfg.get("tuning", "window", default=300)))
+    n = store.clear()
+    print(f"已清空 {n} 条采集记录（{path}）")
+    return 0
+
+
 def _import_terms(cfg: Config, src_file: str) -> int:
     """把候选术语文件**追加**进 glossary.yaml。
 
@@ -439,6 +505,12 @@ def build_parser() -> argparse.ArgumentParser:
                     help="强制 device=cpu（模拟没有显卡的机器，用于验证发行版行为）")
     ap.add_argument("--import-terms", default=None, metavar="FILE",
                     help="把 FILE 里的术语**追加**到 glossary.yaml（不动已有内容）后退出")
+    ap.add_argument("--stats-report", action="store_true",
+                    help="分析已采集的直播数据（语速/电平），打印调参建议后退出")
+    ap.add_argument("--stats-clear", action="store_true",
+                    help="清空采集的直播数据")
+    ap.add_argument("--stats-path", default=None,
+                    help="覆盖 tuning.path（采集数据存放位置）")
     ap.add_argument("--api-key", default=None, help="翻译 API Key（也可用环境变量）")
     ap.add_argument("--base-url", default=None, help="翻译 API base_url")
     ap.add_argument("--llm-model", default=None, help="翻译模型名")
@@ -473,6 +545,8 @@ def apply_cli_overrides(cfg: Config, args: argparse.Namespace) -> Config:
         ov.setdefault("glossary", {})["path"] = args.glossary_path
     if getattr(args, "force_cpu", False):
         ov.setdefault("asr", {})["device"] = "cpu"
+    if getattr(args, "stats_path", None):
+        ov.setdefault("tuning", {})["path"] = args.stats_path
     if args.api_key:
         ov.setdefault("translate", {}).setdefault("llm", {})["api_key"] = args.api_key
     if args.base_url:
@@ -634,6 +708,10 @@ def main(argv: list[str] | None = None) -> int:
     # 导入候选术语：纯文件操作，不需要起识别引擎
     if args.import_terms:
         return _import_terms(cfg, args.import_terms)
+    if getattr(args, "stats_report", False):
+        return _stats_report(cfg)
+    if getattr(args, "stats_clear", False):
+        return _stats_clear(cfg)
 
     from backend.pipeline import Pipeline  # type: ignore
 

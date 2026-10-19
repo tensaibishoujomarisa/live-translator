@@ -85,6 +85,22 @@ glossary:
   enabled: true
   path: glossary.yaml
 
+# ---- 直播数据采集 + 自动调参 ----
+# 程序会记录每句话的语速（字/秒）、音频电平、识别耗时（只存数值，不存字幕内容），
+# 攒够 20 段以上就自动把这些旋钮调到适合主播语速的位置：
+#   vad.min_silence_ms        断句静音阈值（语速快→调短，避免句子被切碎）
+#   audio.gain                音频增益（声音小→调大，这个最影响识别准确度）
+#   asr.partial_interval_ms   局部字幕刷新间隔
+# 不想让它自动改，就把 auto_apply 设成 false（仍然记录，可以用下面的命令看建议）。
+#
+# 查看分析报告：  python -m backend.main --stats-report
+# 清空采集数据：  python -m backend.main --stats-clear
+tuning:
+  enabled: true
+  auto_apply: true
+  path: data/stream_stats.jsonl
+  window: 300
+
 subtitle:
   font_size: 30
   source_font_size: 20

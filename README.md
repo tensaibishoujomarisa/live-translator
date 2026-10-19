@@ -244,6 +244,35 @@ Silero VAD 判断语音边界，`min_silence_ms` 默认 380ms —— 比一般�
 
 改 `config.yaml` 后重启软件生效（外观类可以在 ⚙ 设置里实时改）。
 
+### 让程序自己调（推荐先看这个）
+
+程序会边看边记：每句话的**语速（字/秒）**、**音频电平**、**识别耗时**，
+只存数值不存字幕内容，写在 `data/stream_stats.jsonl`。
+
+攒够 20 段之后，下次启动会**自动**把参数调到适合她语速的位置：
+
+| 指标 | 自动调什么 | 为什么 |
+|---|---|---|
+| 语速 ≥6.5 字/秒 | `vad.min_silence_ms` → 300 | 语速快、停顿短，阈值大了会把句子切碎 |
+| 语速 ≤3.5 字/秒 | `vad.min_silence_ms` → 460 | 语速慢、停顿长，阈值小了会切出碎句 |
+| 电平 <0.008 | `audio.gain` → 3.0 | **声音小是识别准确度的最大杀手**，这条最有效 |
+| 语速 ≥6.0 | `asr.partial_interval_ms` → 450 | 局部字幕刷新更快，跟手感更好 |
+
+查看它算出了什么：
+
+```bat
+.venv\Scripts\python.exe -m backend.main --stats-report
+```
+
+会打印语速中位数、P90、说话占比、电平、以及建议值和理由。
+不想让它自动改，把 `config.yaml` 里 `tuning.auto_apply` 设成 `false`（仍然记录）。
+清空数据：`--stats-clear`。
+
+**注意**：这只能把「能调的旋钮」拧到合适位置，
+识别准确度的上限还是由 `asr.model` 决定的（large-v3-turbo）。
+
+### 手动调参
+
 | 现象 | 调整 |
 |---|---|
 | 字幕出得太慢 | `vad.min_silence_ms` 调小到 250~320；`asr.partial_interval_ms` 调小到 350 |

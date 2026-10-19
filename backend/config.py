@@ -142,6 +142,18 @@ DEFAULTS: dict[str, Any] = {
         # 每次翻译最多塞几条修正示例（太多会挤占 prompt、拖慢速度）
         "max_examples": 6,
     },
+    "tuning": {
+        # 直播数据采集 + 自动调参（见 backend/stream_stats.py）。
+        # 记每条定稿的语速/电平/耗时，攒够样本后自动调整断句阈值、音频增益等。
+        "enabled": True,
+        # 启动时是否自动应用统计出来的参数。
+        # 关掉的话只记录不调整，可以用 `--stats-report` 看建议。
+        "auto_apply": True,
+        # 相对路径按项目根解析
+        "path": "data/stream_stats.jsonl",
+        # 参与统计的最近记录条数
+        "window": 300,
+    },
     "subtitle": {
         # 字幕窗：丢给 Electron 的默认参数
         "font_size": 30,
