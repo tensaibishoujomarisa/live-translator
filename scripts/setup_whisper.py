@@ -78,6 +78,25 @@ def main() -> int:
         print("缺少 faster-whisper。先运行：pip install -r requirements.txt")
         return 2
 
+    # 关键：GPU 推理前必须先把 CUDA 运行库的路径准备好。
+    #
+    # 踩过的坑：这个脚本原来直接构造 WhisperModel(device="cuda")，于是报
+    #     RuntimeError: Library cublas64_12.dll is not found or cannot be loaded
+    # 但其实**模型已经下载完了**（1.5GB 躺在 models/ 里），而 CUDA 库就在
+    # torch 的 torch/lib 下 —— 只要先 import torch / 调 prepare_cuda_dlls
+    # 就能被找到。用户看到的却是"下载失败"，白下 1.5GB。
+    # 后端（backend/asr_engine.py）一直有这一步，只有这个独立脚本漏了。
+    if args.device == "cuda":
+        try:
+            from backend.cuda_setup import prepare_cuda_dlls, preload_torch
+
+            preload_torch()
+            rep = prepare_cuda_dlls(verbose=True)
+            if not rep.get("ok") and rep.get("missing"):
+                print(f"[warn] CUDA 运行库不完整，缺：{', '.join(rep['missing'][:3])}")
+        except Exception as exc:
+            print(f"[warn] CUDA 库预加载失败（{type(exc).__name__}: {exc}），继续尝试")
+
     compute = args.compute_type or ("float16" if args.device == "cuda" else "int8")
     print(f"[1/2] 下载并加载 {args.model}（{args.device}/{compute}）…")
     print(f"      缓存目录：{MODELS_DIR}")
@@ -91,6 +110,9 @@ def main() -> int:
             print("\n缺少 CUDA 运行库，二选一：")
             print("  A. 装运行时库： pip install nvidia-cublas-cu12 nvidia-cudnn-cu12")
             print("  B. 用 CPU 跑： python -m scripts.setup_whisper --device cpu")
+            print("\n注意：如果模型已经下载完了（models/ 里有 model.bin），")
+            print("      那只是「加载」失败，不用重新下载 —— 直接跑 03_启动字幕.bat")
+            print("      即可（后端会自动准备 CUDA 库并回退 CPU）。")
         return 3
 
     print("[2/2] 预热推理（把 CUDA kernel 编译缓存起来，之后首句不用等）…")
