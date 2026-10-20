@@ -34,6 +34,38 @@ from .vad import Segmenter, create_vad
 
 log = get_logger("jplt.pipeline")
 
+# 术语表的合理长度上限。超过这个长度基本是整句而不是名词/短语。
+_TERM_MAX_LEN = 24
+# 出现这些字符说明是句子而不是术语
+_SENTENCE_MARKS = "。．！？!?、，,；;：:「」『』（）()"
+
+
+def _looks_like_term(ja: str) -> bool:
+    """判断一段日语像不像「术语」，而不是一整句话。
+
+    术语表是每次翻译都全量注入的硬约束，塞整句进去只会污染 prompt，
+    而且整句几乎不可能在译文里原样出现，等于白占位置。
+    实测踩过：勾「专有名词」时把
+      「コグタイムです。コグタイム。」
+      「館長7028ってやばくない?」
+    两条整句塞进了术语表。
+    """
+    s = (ja or "").strip()
+    if not s or len(s) > _TERM_MAX_LEN:
+        return False
+    # 句末标点 / 句中顿号逗号 / 空白（含全角空格）都说明是句子
+    if any(ch in _SENTENCE_MARKS for ch in s):
+        return False
+    if any(ch.isspace() for ch in s):
+        return False
+    # 以助动词/终助词结尾的长串，多半是句子
+    for tail in ("です", "ます", "でした", "ました", "ですね", "ますね",
+                 "よね", "だよね", "だよ", "だろう", "でしょう", "ください",
+                 "ません", "じゃん", "けど", "かな", "かも", "てる", "ている"):
+        if s.endswith(tail):
+            return False
+    return True
+
 
 class Pipeline:
     # 重复定稿的判定窗口（秒）：这段时间内「文本 + 音频时长」都一样就判为重复
@@ -593,11 +625,18 @@ class Pipeline:
         # 用户勾了「这是专有名词」→ 直接写进术语表。
         # 术语表是强制对照（每次翻译都全量带上），比整句示例可靠得多，
         # 所以不该让用户等它"出现第二次"才生效。
-        if scope == "term" and len(c.ja.strip()) <= 24:
+        # 只有「像术语」的才自动写进术语表。
+        # 踩过的坑：用户勾「这是专有名词」时如果那条其实是整句
+        # （例如「コグタイムです。コグタイム。」「館長7028ってやばくない?」），
+        # 整句会被塞进术语表。术语表是每次翻译全量注入的硬约束，
+        # 塞整句只会污染 prompt，而且永远匹配不上。
+        if scope == "term" and _looks_like_term(c.ja):
             try:
                 promoted = self.promote_terms(only=[c.ja])
             except Exception as exc:
                 log.warning("自动提升术语失败：%s", exc)
+        elif scope == "term":
+            log.info("不把整句写进术语表（%d 字）：%s", len(c.ja), c.ja[:24])
 
         self.counters["corrections"] = self.counters.get("corrections", 0) + 1
         stats = store_obj.stats()
