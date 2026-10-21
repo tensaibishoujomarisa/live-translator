@@ -32,8 +32,12 @@ $MaxMinutes = 120        # 最多守 2 小时（08:00 开播，留足迟到余�
 $IntervalSec = 60
 $ProxyCandidates = @('http://127.0.0.1:7890', 'http://127.0.0.1:10809')
 $DryRun = $false         # -DryRun 只判断不打开，用于测试
+$StartApp = $true        # -NoApp 只打开直播页，不启动字幕程序
 
-foreach ($a in $args) { if ($a -eq '-DryRun') { $DryRun = $true } }
+foreach ($a in $args) {
+    if ($a -eq '-DryRun') { $DryRun = $true }
+    if ($a -eq '-NoApp')  { $StartApp = $false }
+}
 
 New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
 
@@ -100,28 +104,33 @@ function Get-VideoInfo([string]$VideoId) {
     }
 }
 
-Write-Log "==== 自动打开开始（预约时间感知，DryRun=$DryRun）===="
+Write-Log "==== 自动打开开始（预约时间感知，DryRun=$DryRun，StartApp=$StartApp）===="
 
-# ---------- 1. 字幕程序 ----------
+# ---------- 1. 字幕程序（可用 -NoApp 关掉） ----------
 try {
-    $running = @(Get-Process electron -ErrorAction SilentlyContinue |
-        Where-Object { $_.Path -and $_.Path.StartsWith($Root, 'OrdinalIgnoreCase') })
-    if ($running.Count -gt 0) {
-        Write-Log "字幕程序已在运行（$($running.Count) 个进程）"
-    }
-    elseif ($DryRun) {
-        Write-Log '[DryRun] 跳过启动字幕程序'
+    if (-not $StartApp) {
+        Write-Log '按 -NoApp 设置：只打开直播，不启动字幕程序'
     }
     else {
-        $bat = Join-Path $Root '03_启动字幕.bat'
-        if (Test-Path $bat) {
-            Write-Log '启动字幕程序…'
-            Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', "`"$bat`"" `
-                -WorkingDirectory $Root -WindowStyle Minimized
-            Start-Sleep -Seconds 15
-            Write-Log '字幕程序启动完成'
+        $running = @(Get-Process electron -ErrorAction SilentlyContinue |
+            Where-Object { $_.Path -and $_.Path.StartsWith($Root, 'OrdinalIgnoreCase') })
+        if ($running.Count -gt 0) {
+            Write-Log "字幕程序已在运行（$($running.Count) 个进程）"
         }
-        else { Write-Log "[警告] 找不到 $bat" }
+        elseif ($DryRun) {
+            Write-Log '[DryRun] 跳过启动字幕程序'
+        }
+        else {
+            $bat = Join-Path $Root '03_启动字幕.bat'
+            if (Test-Path $bat) {
+                Write-Log '启动字幕程序…'
+                Start-Process -FilePath 'cmd.exe' -ArgumentList '/c', "`"$bat`"" `
+                    -WorkingDirectory $Root -WindowStyle Minimized
+                Start-Sleep -Seconds 15
+                Write-Log '字幕程序启动完成'
+            }
+            else { Write-Log "[警告] 找不到 $bat" }
+        }
     }
 }
 catch { Write-Log "启动字幕程序失败：$($_.Exception.Message)" }
